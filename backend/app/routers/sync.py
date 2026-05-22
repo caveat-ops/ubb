@@ -49,7 +49,37 @@ async def receive_raw_posts(payload: dict, authorization: str = Header(None)):
     return {"inserted": inserted}
 
 
-@router.post("")
+@router.post("/seed")
+async def receive_seed(payload: dict, authorization: str = Header(None)):
+    """Recebe dump completo do banco (schools, disciplines, posts)"""
+    _check_token(authorization)
+
+    async with async_session() as db:
+        # Schools (upsert by name)
+        for s in payload.get("schools", []):
+            await db.execute(
+                text("INSERT INTO schools (name, slug, description, color, icon) VALUES (:n, :s, :d, :c, :i) ON CONFLICT (name) DO UPDATE SET slug=:s, description=:d, color=:c, icon=:i"),
+                {"n": s["name"], "s": s.get("slug", ""), "d": s.get("description"), "c": s.get("color"), "i": s.get("icon")},
+            )
+
+        # Disciplines (upsert by name)
+        for d in payload.get("disciplines", []):
+            await db.execute(
+                text("INSERT INTO disciplines (name, slug, description, icon, color, school_id) VALUES (:n, :s, :d, :i, :c, (SELECT id FROM schools WHERE name=:sn LIMIT 1)) ON CONFLICT (name) DO UPDATE SET slug=:s, description=:d, icon=:i, color=:c, school_id=(SELECT id FROM schools WHERE name=:sn LIMIT 1)"),
+                {"n": d["name"], "s": d.get("slug", ""), "d": d.get("description"), "i": d.get("icon"), "c": d.get("color"), "sn": d.get("school_name")},
+            )
+
+        # Posts (upsert by linkedin_url)
+        for p in payload.get("posts", []):
+            await db.execute(
+                text("INSERT INTO posts (linkedin_url, title, subtitle, summary, quote, mariana_take, content_type, difficulty, discipline_id, school_id) VALUES (:l, :t, :s, :su, :q, :m, :ct, :d, (SELECT id FROM disciplines WHERE name=:dn LIMIT 1), (SELECT id FROM schools WHERE name=:sn LIMIT 1)) ON CONFLICT (linkedin_url) DO UPDATE SET title=:t, subtitle=:s, summary=:su, quote=:q, mariana_take=:m, content_type=:ct, difficulty=:d, discipline_id=(SELECT id FROM disciplines WHERE name=:dn LIMIT 1), school_id=(SELECT id FROM schools WHERE name=:sn LIMIT 1)"),
+                {"l": p["linkedin_url"], "t": p.get("title", ""), "s": p.get("subtitle"), "su": p.get("summary"), "q": p.get("quote"), "m": p.get("mariana_take"), "ct": p.get("content_type", "aula"), "d": p.get("difficulty", "Iniciante"), "dn": p.get("discipline_name"), "sn": p.get("school_name")},
+            )
+
+        await db.commit()
+
+    return {"status": "ok"}
+
 async def trigger_sync():
     from app.services.task_manager import task_manager
     task_id = task_manager.create_task()

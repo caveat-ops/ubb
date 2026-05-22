@@ -223,12 +223,12 @@ async def main():
         # Pre-flight: confirma que o endpoint está respondendo antes de começar
         for attempt in range(1, 11):
             try:
-                r = httpx.get(endpoint.replace("/raw-posts", "-info"), headers=headers, timeout=10)
+                r = httpx.get(endpoint.replace("/raw-posts", "-info"), headers=headers, timeout=10, verify=False)
                 if r.status_code == 200:
                     logger.info("📡 VM respondeu ao pre-flight (tentativa %d)", attempt)
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("⚠️  Pre-flight tentativa %d: %s", attempt, e)
             logger.info("⏳ Aguardando VM... (%d/10)", attempt)
             time.sleep(3)
         else:
@@ -244,7 +244,7 @@ async def main():
         for i in range(0, len(all_posts), batch_size):
             batch = all_posts[i:i + batch_size]
             batch_num = i // batch_size + 1
-            r = httpx.post(endpoint, json={"posts": batch}, headers=headers, timeout=60)
+            r = httpx.post(endpoint, json={"posts": batch}, headers=headers, timeout=60, verify=False)
             if r.status_code != 200:
                 logger.error("❌ Lote %d/%d: HTTP %d — resposta: %s", batch_num, total_batches, r.status_code, r.text[:200])
                 logger.error("❌ Abortando push. Corrija o problema na VM e rode novamente.")
@@ -255,7 +255,28 @@ async def main():
             logger.info("📤 Lote %d/%d: %d inseridos", batch_num, total_batches, inserted)
             if i + batch_size < len(all_posts):
                 time.sleep(0.5)  # pacing: evita sobrecarregar o nginx
-        logger.info("📤 Push-all completo: %d posts enviados", total_inserted)
+        logger.info("📤 Push-all: raw_posts completo (%d enviados)", total_inserted)
+
+        # Fase 2: enviar dados classificados (schools, disciplines, posts)
+        logger.info("📤 Push-all: enviando dados classificados (seed)...")
+        async with async_session() as db:
+            # Schools
+            sch_rows = (await db.execute(text("SELECT name, slug, description, color, icon FROM schools"))).fetchall()
+            schools = [{"name": r[0], "slug": r[1], "description": r[2], "color": r[3], "icon": r[4]} for r in sch_rows]
+            # Disciplines
+            disc_rows = (await db.execute(text("SELECT d.name, d.slug, d.description, d.icon, d.color, s.name as school_name FROM disciplines d LEFT JOIN schools s ON s.id = d.school_id"))).fetchall()
+            disciplines = [{"name": r[0], "slug": r[1], "description": r[2], "icon": r[3], "color": r[4], "school_name": r[5]} for r in disc_rows]
+            # Posts (classified)
+            post_rows = (await db.execute(text("SELECT p.linkedin_url, p.title, p.subtitle, p.summary, p.quote, p.mariana_take, p.content_type, p.difficulty, d.name as disc_name, s.name as school_name FROM posts p LEFT JOIN disciplines d ON d.id = p.discipline_id LEFT JOIN schools s ON s.id = p.school_id WHERE p.discipline_id IS NOT NULL"))).fetchall()
+            posts = [{"linkedin_url": r[0], "title": r[1], "subtitle": r[2], "summary": r[3], "quote": r[4], "mariana_take": r[5], "content_type": r[6], "difficulty": r[7], "discipline_name": r[8], "school_name": r[9]} for r in post_rows]
+
+        seed_payload = {"schools": schools, "disciplines": disciplines, "posts": posts}
+        seed_endpoint = f"{push_url.rstrip('/')}/api/sync/seed"
+        r = httpx.post(seed_endpoint, json=seed_payload, headers=headers, timeout=60, verify=False)
+        if r.status_code == 200:
+            logger.info("📤 Seed completo: %d schools, %d disciplines, %d posts", len(schools), len(disciplines), len(posts))
+        else:
+            logger.error("❌ Seed falhou: HTTP %d — %s", r.status_code, r.text[:200])
         return
 
     if sync_mode == "process":
@@ -502,7 +523,7 @@ async def main():
         try:
             import httpx
             headers = {"Authorization": f"Bearer {push_token}"} if push_token else {}
-            r = httpx.post(f"{push_url.rstrip('/')}/api/sync/raw-posts", json={"posts": new_posts_for_push}, headers=headers, timeout=30)
+            r = httpx.post(f"{push_url.rstrip('/')}/api/sync/raw-posts", json={"posts": new_posts_for_push}, headers=headers, timeout=30, verify=False)
             result = r.json()
             logger.info("📤 Push para VM: %d inseridos (de %d enviados)", result.get("inserted", 0), len(new_posts_for_push))
         except Exception as e:
