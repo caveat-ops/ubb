@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -216,18 +217,44 @@ async def main():
             sys.exit(1)
         logger.info("📤 Push-all: enviando todos os raw_posts para %s ...", push_url)
         import httpx
+        headers = {"Authorization": f"Bearer {push_token}"} if push_token else {}
+        endpoint = f"{push_url.rstrip('/')}/api/sync/raw-posts"
+
+        # Pre-flight: confirma que o endpoint está respondendo antes de começar
+        for attempt in range(1, 11):
+            try:
+                r = httpx.get(endpoint.replace("/raw-posts", "-info"), headers=headers, timeout=10)
+                if r.status_code == 200:
+                    logger.info("📡 VM respondeu ao pre-flight (tentativa %d)", attempt)
+                    break
+            except Exception:
+                pass
+            logger.info("⏳ Aguardando VM... (%d/10)", attempt)
+            time.sleep(3)
+        else:
+            logger.error("❌ VM não respondeu após 10 tentativas. Abortando.")
+            return
+
         async with async_session() as db:
             result = await db.execute(text("SELECT raw_json FROM raw_posts ORDER BY id"))
             all_posts = [row[0] for row in result.fetchall()]
-        headers = {"Authorization": f"Bearer {push_token}"} if push_token else {}
         batch_size = 100
         total_inserted = 0
+        total_batches = (len(all_posts) + batch_size - 1) // batch_size
         for i in range(0, len(all_posts), batch_size):
             batch = all_posts[i:i + batch_size]
-            r = httpx.post(f"{push_url.rstrip('/')}/api/sync/raw-posts", json={"posts": batch}, headers=headers, timeout=60)
+            batch_num = i // batch_size + 1
+            r = httpx.post(endpoint, json={"posts": batch}, headers=headers, timeout=60)
+            if r.status_code != 200:
+                logger.error("❌ Lote %d/%d: HTTP %d — resposta: %s", batch_num, total_batches, r.status_code, r.text[:200])
+                logger.error("❌ Abortando push. Corrija o problema na VM e rode novamente.")
+                return
             result = r.json()
-            total_inserted += result.get("inserted", 0)
-            logger.info("📤 Lote %d/%d: %d inseridos", i // batch_size + 1, (len(all_posts) + batch_size - 1) // batch_size, result.get("inserted", 0))
+            inserted = result.get("inserted", 0)
+            total_inserted += inserted
+            logger.info("📤 Lote %d/%d: %d inseridos", batch_num, total_batches, inserted)
+            if i + batch_size < len(all_posts):
+                time.sleep(0.5)  # pacing: evita sobrecarregar o nginx
         logger.info("📤 Push-all completo: %d posts enviados", total_inserted)
         return
 
