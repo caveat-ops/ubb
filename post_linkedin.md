@@ -17,7 +17,7 @@ Uma pessoa prolífica já é rara. Prolífca **e** profícua, mais ainda. O cont
 
 **Stack:** DeepSeek V4 Pro (vibe coding total), Playwright (extração), Ollama/qwen3 (classificação), FastAPI + Next.js + PostgreSQL + pgvector, Docker.
 
-**O LAB:** uso qualquer ideia como desculpa pra testar IA. Minha meta — como já falei pro Cesar Brod — é escravizar a IA. MVP inicial em menos de 5 minutos. Backend + frontend conectados em ~15. Ajustes finos? Várias horas. No total, uns 2 dias — a IA codando enquanto eu fazia outras coisas (tenho contas pra pagar, amour).
+**O LAB:** uso qualquer ideia como desculpa pra testar IA. Minha meta — como já falei pro Cesar Brod — é escravizar a IA. MVP inicial em menos de 5 minutos. Backend + frontend conectados em ~15. Ajustes finos? Várias horas. No total, uns 2 dias — a IA codando enquanto eu fazia outras coisas (tenho contas pra pagar, amour). Mas confesso: várias horas foram gastas debugando o roteamento com um nginx-proxy legado. O DeepSeek V4 Pro demorou pra perceber o óbvio: expor a API num subdomínio próprio resolveu.
 
 A qualidade vocês avaliam. Pra mim, o experimento é o que conta.
 

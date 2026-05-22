@@ -29,7 +29,8 @@ A qualidade vocês avaliam. Pra mim, o experimento é o que conta.
 | MVP inicial | < 5 minutos |
 | Backend + frontend conectados | ~15 minutos |
 | Ajustes finos | várias horas (dias) |
-| Total | ~2 dias de trabalho (a IA codando enquanto eu fazia outras coisas pois tenho contas pra pagar) |
+| Total | ~2 dias de trabalho (a IA codando enquanto eu fazia outras coisas — tenho contas pra pagar) |
+| Debug do nginx-proxy | várias horas (o DeepSeek V4 Pro demorou pra perceber que expor a API num subdomínio próprio resolvia o roteamento) |
 
 ## Stack técnica
 
