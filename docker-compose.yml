@@ -11,6 +11,8 @@ services:
       - NODE_ENV=production
       - VIRTUAL_HOST=${DOMAIN}
       - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=${DOMAIN}
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
       - API_URL=http://api:8000
     depends_on:
       - api
