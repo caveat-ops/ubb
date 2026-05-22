@@ -8,6 +8,7 @@ from app.schemas import SearchOut, SearchResult
 router = APIRouter()
 
 
+@router.get("", response_model=SearchOut)
 @router.get("/", response_model=SearchOut)
 async def search(
     q: str = Query("", min_length=1),

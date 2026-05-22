@@ -9,6 +9,7 @@ from app.schemas import DisciplineOut, SchoolOut
 router = APIRouter()
 
 
+@router.get("", response_model=list[DisciplineOut])
 @router.get("/", response_model=list[DisciplineOut])
 async def list_disciplines(db: AsyncSession = Depends(get_db)):
     # Count posts per discipline
