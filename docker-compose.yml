@@ -4,11 +4,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
     env_file:
       - .env
     environment:
       - NODE_ENV=production
+      - PORT=${FRONTEND_PORT:-3000}
       - API_URL=http://api:8000
     depends_on:
       - api

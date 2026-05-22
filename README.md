@@ -130,6 +130,7 @@ O endpoint `POST /api/sync/raw-posts` na VM recebe e insere no banco.
 | Var | Descrição |
 |-----|-----------|
 | SYNC_MODE | capture, monitor, process |
+| FRONTEND_PORT | Porta do frontend (default: 3000) |
 | URL_TARGET | URL do perfil LinkedIn |
 | URL_ABOUT | URL da página "Sobre" do alvo |
 | SYNC_PUSH_URL | URL da VM para push |
