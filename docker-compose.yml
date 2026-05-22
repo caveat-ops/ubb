@@ -27,6 +27,9 @@ services:
     env_file:
       - .env
     environment:
+      - VIRTUAL_HOST=${DOMAIN}
+      - VIRTUAL_PATH=/api/
+      - VIRTUAL_DEST=/
       - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
     depends_on:
       db:
