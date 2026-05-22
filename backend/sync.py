@@ -589,6 +589,27 @@ async def main():
                 processed += 1
             logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
 
+            # Push do seed se houve classificações novas e push configurado
+            if processed > 0 and push_url:
+                logger.info("📤 Enviando seed para VM (%d novos posts)...", processed)
+                import httpx
+                async with async_session() as db2:
+                    sch_rows = (await db2.execute(text("SELECT name, slug, description, color, icon FROM schools"))).fetchall()
+                    schools = [{"name": r[0], "slug": r[1], "description": r[2], "color": r[3], "icon": r[4]} for r in sch_rows]
+                    disc_rows = (await db2.execute(text("SELECT d.name, d.slug, d.description, d.icon, d.color, s.name FROM disciplines d LEFT JOIN schools s ON s.id = d.school_id"))).fetchall()
+                    disciplines = [{"name": r[0], "slug": r[1], "description": r[2], "icon": r[3], "color": r[4], "school_name": r[5]} for r in disc_rows]
+                    post_rows = (await db2.execute(text("SELECT p.linkedin_url, p.title, p.subtitle, p.summary, p.quote, p.mariana_take, p.content_type, p.difficulty, d.name, s.name FROM posts p LEFT JOIN disciplines d ON d.id = p.discipline_id LEFT JOIN schools s ON s.id = p.school_id WHERE p.discipline_id IS NOT NULL"))).fetchall()
+                    posts = [{"linkedin_url": r[0], "title": r[1], "subtitle": r[2], "summary": r[3], "quote": r[4], "mariana_take": r[5], "content_type": r[6], "difficulty": r[7], "discipline_name": r[8], "school_name": r[9]} for r in post_rows]
+                seed = {"schools": schools, "disciplines": disciplines, "posts": posts}
+                try:
+                    r = httpx.post(f"{push_url.rstrip('/')}/api/sync/seed", json=seed, headers={"Authorization": f"Bearer {push_token}"} if push_token else {}, timeout=60, verify=False)
+                    if r.status_code == 200:
+                        logger.info("📤 Seed enviado: %d schools, %d disciplines, %d posts", len(schools), len(disciplines), len(posts))
+                    else:
+                        logger.warning("⚠️  Seed falhou: HTTP %d", r.status_code)
+                except Exception as e:
+                    logger.warning("⚠️  Seed falhou: %s", e)
+
     logger.info("⏹️  Parando aqui (FASE 4).")
 
 
