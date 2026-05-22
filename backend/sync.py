@@ -1,0 +1,523 @@
+import argparse
+import asyncio
+import json
+import logging
+import os
+import random
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# --- .env loading (substitui app.config.settings durante FASE 1) ---
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+if _ENV_FILE.exists():
+    for line in _ENV_FILE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            v = v.split("#")[0].strip()
+            os.environ.setdefault(k.strip(), v)
+
+# --- Força DATABASE_URL para localhost (rodando no host, não no Docker) ---
+os.environ["DATABASE_URL"] = "postgresql+asyncpg://ubb:ubb@localhost:5432/ubb"
+
+from app.database import async_session, init_db
+from app.services.linkedin_agent import LinkedInAgent
+from sqlalchemy import text
+
+logger = logging.getLogger("sync")
+
+
+async def get_or_create_tag(db, name: str) -> Tag:
+    normalized = name.lower().strip().replace(" ", "_").replace("#", "")
+    result = await db.execute(
+        select(Tag).where(Tag.normalized_name == normalized)
+    )
+    tag = result.scalar_one_or_none()
+    if tag is None:
+        tag = Tag(name=name.strip(), normalized_name=normalized)
+        db.add(tag)
+        await db.flush()
+    return tag
+
+
+async def get_or_create_school(db, name: str) -> School | None:
+    if not name:
+        return None
+    slug = name.lower().strip().replace(" ", "-")
+    result = await db.execute(
+        select(School).where(School.slug == slug)
+    )
+    school = result.scalar_one_or_none()
+    if school is None:
+        school = School(name=name.strip(), slug=slug)
+        db.add(school)
+        await db.flush()
+    return school
+
+
+async def get_or_create_discipline(
+    db, name: str, school: School | None = None
+) -> Discipline | None:
+    if not name:
+        return None
+    slug = name.lower().strip().replace(" ", "-")
+    result = await db.execute(
+        select(Discipline).where(Discipline.slug == slug)
+    )
+    discipline = result.scalar_one_or_none()
+    if discipline is None:
+        discipline = Discipline(
+            name=name.strip(),
+            slug=slug,
+            school_id=school.id if school else None,
+        )
+        db.add(discipline)
+        await db.flush()
+    return discipline
+
+
+async def process_post(
+    db,
+    linkedin_data: dict,
+    ollama: OllamaService,
+    update_all: bool = False,
+) -> Post | None:
+    linkedin_url = linkedin_data["linkedin_url"]
+    result = await db.execute(
+        select(Post).where(Post.linkedin_url == linkedin_url)
+    )
+    existing = result.scalar_one_or_none()
+    if existing and not update_all:
+        logger.info("  Post already exists: %s", linkedin_url)
+        return None
+    logger.info("  Classifying post with Ollama...")
+    classification = await ollama.classify_post(
+        content=linkedin_data.get("content", ""),
+        hashtags=linkedin_data.get("hashtags", []),
+    )
+    if existing:
+        post = existing
+        logger.info("  Updating post: %s", linkedin_url)
+    else:
+        post = Post(linkedin_url=linkedin_url)
+        db.add(post)
+        await db.flush()
+    post.linkedin_post_id = linkedin_data.get("linkedin_post_id")
+    post.content = linkedin_data.get("content", "")
+    post_date_str = linkedin_data.get("post_date", "")
+    if post_date_str:
+        try:
+            post.post_date = datetime.fromisoformat(post_date_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+    post.title = classification.get("title", "")
+    post.subtitle = classification.get("subtitle", "")
+    post.summary = classification.get("summary", "")
+    post.quote = classification.get("quote", "")
+    post.mariana_take = classification.get("mariana_take", "")
+    post.content_type = classification.get("content_type", "")
+    post.skill_type = classification.get("skill_type", "")
+    post.difficulty = classification.get("difficulty", "")
+    post.indexed_at = datetime.utcnow()
+    school = await get_or_create_school(db, classification.get("school", ""))
+    if school:
+        post.school_id = school.id
+    discipline = await get_or_create_discipline(db, classification.get("discipline", ""), school)
+    if discipline:
+        post.discipline_id = discipline.id
+    tag_names = list(classification.get("tags", []))
+    for h in linkedin_data.get("hashtags", []):
+        if h not in tag_names:
+            tag_names.append(h)
+    if existing:
+        post.tags.clear()
+    for tag_name in tag_names:
+        tag = await get_or_create_tag(db, tag_name)
+        post.tags.append(tag)
+    post.raw_json = {"linkedin": linkedin_data, "classification": classification}
+    await db.flush()
+    logger.info("  Generating embedding...")
+    try:
+        embed_text = " ".join(filter(None, [post.title, post.subtitle, post.summary, post.content]))
+        embedding = await compute_post_embedding(embed_text)
+        post.embedding = embedding
+    except Exception as e:
+        logger.warning("  Embedding generation failed: %s", e)
+    await db.flush()
+    logger.info("  Post ID %d processed successfully", post.id)
+    return post
+
+
+async def generate_relations(db, ollama: OllamaService):
+    logger.info("Generating semantic relations...")
+    result = await db.execute(select(Post).where(Post.title.isnot(None), Post.summary.isnot(None)))
+    all_posts = result.scalars().all()
+    if len(all_posts) < 2:
+        logger.info("  Not enough posts for relations (need >= 2)")
+        return
+    posts_data = []
+    for p in all_posts:
+        posts_data.append({
+            "id": p.id, "title": p.title or "", "summary": p.summary or "",
+            "discipline": p.discipline.name if p.discipline else "",
+            "tags": [t.name for t in p.tags] if p.tags else [],
+        })
+    relations = await ollama.generate_relations(posts_data)
+    await db.execute(SemanticRelation.__table__.delete())
+    count = 0
+    for rel in relations:
+        source_id = rel.get("source_id")
+        target_id = rel.get("target_id")
+        score = rel.get("similarity_score", 0.0)
+        rel_type = rel.get("relation_type", "")
+        if not source_id or not target_id:
+            continue
+        relation = SemanticRelation(source_post_id=source_id, target_post_id=target_id, similarity_score=score, relation_type=rel_type)
+        db.add(relation)
+        count += 1
+    await db.flush()
+    logger.info("  Created %d semantic relations", count)
+
+
+async def main():
+    parser = argparse.ArgumentParser(description="Sync LinkedIn posts to Universidade Bebê")
+    parser.add_argument("--headless", action="store_true", default=None, help="Run browser in headless mode")
+    parser.add_argument("--no-headless", action="store_false", dest="headless", help="Run browser with visible UI")
+    parser.add_argument("--max-posts", type=int, default=20, help="Maximum number of posts to sync")
+    parser.add_argument("--update-all", action="store_true", default=False, help="Re-process existing posts")
+    parser.set_defaults(headless=None)
+    args = parser.parse_args()
+
+    headless = os.environ.get("PLAYWRIGHT_HEADLESS", "false").lower() == "true" if args.headless is None else args.headless
+
+    log_level = os.environ.get("LOG_LEVEL", "info")
+    logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO), format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    url_target = os.environ.get("URL_TARGET", "")
+    linkedin_email = os.environ.get("LINKEDIN_EMAIL", "")
+    linkedin_password = os.environ.get("LINKEDIN_PASSWORD", "")
+
+    # --- Config do modo de operação ---
+    sync_mode = os.environ.get("SYNC_MODE", "monitor")
+    max_scrolls = int(os.environ.get("MAX_SCROLLS", "40"))
+    dupes_to_stop = int(os.environ.get("CONSECUTIVE_DUPES_TO_STOP", "5"))
+    scroll_delay_min = int(os.environ.get("SCROLL_DELAY_MIN", "3"))
+    scroll_delay_max = int(os.environ.get("SCROLL_DELAY_MAX", "8"))
+
+    if sync_mode == "process":
+        # --- MODO PROCESS-ONLY: pula extração, vai direto pra FASE 4 ---
+        logger.info("⚙️  Modo process-only — iniciando classificação...")
+        logger.info("Initializing database...")
+        await init_db()
+        async with async_session() as db:
+            await db.execute(text("""
+                CREATE TABLE IF NOT EXISTS raw_posts (
+                    id SERIAL PRIMARY KEY, linkedin_url TEXT UNIQUE NOT NULL,
+                    raw_json JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            await db.commit()
+        logger.info("✅ Banco pronto")
+
+        process_count = int(os.environ.get("PROCESS_COUNT", "10"))
+        logger.info("🤖 FASE 4: Classificando até %d posts com Ollama (%s)...", process_count, os.environ.get("OLLAMA_MODEL", ""))
+        from app.services.ollama_service import OllamaService
+        ollama = OllamaService()
+
+        async with async_session() as db:
+            result = await db.execute(
+                text("SELECT rp.id, rp.raw_json FROM raw_posts rp LEFT JOIN posts p ON p.linkedin_url = rp.linkedin_url WHERE p.id IS NULL ORDER BY rp.id LIMIT :limit"),
+                {"limit": process_count},
+            )
+            unprocessed = result.fetchall()
+            if not unprocessed:
+                logger.info("✅ Nenhum post pendente.")
+            else:
+                logger.info("📦 %d posts pendentes.", len(unprocessed))
+                processed = 0
+                for row_id, raw_json in unprocessed:
+                    content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
+                    linkedin_url = raw_json.get("link", "")
+                    logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(unprocessed), row_id)
+                    classification = await ollama.classify_discipline(content)
+                    confidence = classification["confidence"]
+                    discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
+                    school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
+                    logger.info("  ↳ disciplina=%s (confiança=%d%%), school=%s", discipline_name, confidence, school_name or "—")
+
+                    # Cria/encontra school primeiro (disciplina depende dela)
+                    school_id = None
+                    if school_name:
+                        sch_result = await db.execute(text("SELECT id FROM schools WHERE name = :name"), {"name": school_name})
+                        sch_row = sch_result.fetchone()
+                        if sch_row:
+                            school_id = sch_row[0]
+                        else:
+                            sch_result = await db.execute(text("INSERT INTO schools (name, slug) VALUES (:name, :slug) RETURNING id"), {"name": school_name, "slug": school_name.lower().replace(" ", "-")})
+                            school_id = sch_result.fetchone()[0]
+                            await db.commit()
+
+                    # Cria/encontra disciplina com school_id
+                    disc_result = await db.execute(text("SELECT id, school_id FROM disciplines WHERE name = :name"), {"name": discipline_name})
+                    disc_row = disc_result.fetchone()
+                    if disc_row:
+                        discipline_id = disc_row[0]
+                        # Atualiza school_id se estiver nulo e agora temos um
+                        if disc_row[1] is None and school_id is not None:
+                            await db.execute(text("UPDATE disciplines SET school_id = :sid WHERE id = :did"), {"sid": school_id, "did": discipline_id})
+                            await db.commit()
+                    else:
+                        disc_result = await db.execute(text("INSERT INTO disciplines (name, slug, school_id) VALUES (:name, :slug, :sid) RETURNING id"), {"name": discipline_name, "slug": discipline_name.lower().replace(" ", "-"), "sid": school_id})
+                        discipline_id = disc_result.fetchone()[0]
+                        await db.commit()
+                        logger.info("  ↳ Nova disciplina: %s (id=%d)", discipline_name, discipline_id)
+
+                    title = (content or "")[:100].split("\n")[0].strip()
+                    await db.execute(text("INSERT INTO posts (linkedin_url, title, content, discipline_id, school_id, indexed_at) VALUES (:url, :title, :content, :disc_id, :sch_id, NOW())"), {"url": linkedin_url, "title": title, "content": content, "disc_id": discipline_id, "sch_id": school_id})
+                    await db.commit()
+                    processed += 1
+                logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
+        logger.info("⏹️  Parando (process-only).")
+        return
+
+    # Delay inicial
+    if sync_mode == "capture":
+        delay = random.randint(120, 240)
+    else:
+        delay = random.randint(0, 30)
+    logger.info("⏳ Modo %s — aguardando %d segundos (%d min)...", sync_mode, delay, delay // 60)
+    await asyncio.sleep(delay)
+    logger.info("Starting sync — mode=%s, target=%s", sync_mode, url_target)
+    logger.info("Max posts: %d | Headless: %s | Scrolls: %d | Dupes-stop: %d", args.max_posts, headless, max_scrolls, dupes_to_stop)
+
+    if not url_target:
+        logger.error("URL_TARGET not configured")
+        sys.exit(1)
+    if not linkedin_email or not linkedin_password:
+        logger.error("LinkedIn credentials not configured")
+        sys.exit(1)
+
+    logger.info("Initializing database...")
+    await init_db()
+    async with async_session() as db:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS raw_posts (
+                id SERIAL PRIMARY KEY, linkedin_url TEXT UNIQUE NOT NULL,
+                raw_json JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await db.commit()
+    logger.info("✅ Banco pronto")
+
+    async with LinkedInAgent(email=linkedin_email, password=linkedin_password, headless=headless) as agent:
+        logged_in = await agent.login()
+        if not logged_in:
+            logger.error("LinkedIn login failed")
+            sys.exit(1)
+        logger.info("✅ Login bem-sucedido!")
+        logger.info("🌐 Navegando para URL_TARGET: %s", url_target)
+        await agent.page.goto(url_target, wait_until="domcontentloaded", timeout=30000)
+        await agent.page.wait_for_timeout(3000)
+        logger.info("📄 Página carregada: %s", (await agent.page.title())[:100])
+        logger.info("📍 URL atual: %s", agent.page.url[:100])
+
+        total_saved = 0
+        new_posts_for_push = []
+        seen_urls = set()
+
+        async with async_session() as db:
+            if sync_mode == "capture":
+                stale_infinite = 0
+                for scroll_n in range(max_scrolls):
+                    raw = await agent.page.evaluate("""() => {
+                        const containers = document.querySelectorAll('.feed-shared-update-v2');
+                        const results = [];
+                        for (const c of containers) {
+                            const linkEl = c.querySelector('a[href*="/posts/"], a[href*="activity-"], a[href*="/feed/update/"]');
+                            const link = linkEl ? (linkEl.href || '') : '';
+                            const activityMatch = link.match(/activity[-:](\\d+)/) || (c.getAttribute('data-urn') || '').match(/activity:(\\d+)/);
+                            const activityId = activityMatch ? activityMatch[1] : '';
+                            const postUrl = link || (activityId ? 'https://www.linkedin.com/feed/update/urn:li:activity:' + activityId : '');
+                            const textEl = c.querySelector('.feed-shared-text, .feed-shared-text__text-visual, .feed-shared-update-v2__description, .update-components-text, .feed-shared-inline-show-more-text');
+                            const text = textEl ? textEl.innerText.trim() : '';
+                            const timeEl = c.querySelector('time');
+                            const date = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText) : '';
+                            const hashtags = [...text.matchAll(/#(\\w+)/g)].map(m => m[1]);
+                            if (postUrl && text) results.push({link: postUrl, content: text, date: date, hashtags: hashtags});
+                        }
+                        return results;
+                    }""")
+                    consecutive_dupes = 0
+                    scroll_saved = 0
+                    for p in raw:
+                        link = p.get("link") or ""
+                        if link in seen_urls: continue
+                        seen_urls.add(link)
+                        post_json = {"title": (p.get("content") or "")[:100].split("\n")[0].strip(), "link": link, "description": p.get("content") or "", "post_date": p.get("date") or "", "hashtags": p.get("hashtags") or []}
+                        result = await db.execute(text("SELECT id FROM raw_posts WHERE linkedin_url = :url"), {"url": link})
+                        if result.scalar_one_or_none():
+                            consecutive_dupes += 1
+                        else:
+                            consecutive_dupes = 0
+                            await db.execute(text("INSERT INTO raw_posts (linkedin_url, raw_json) VALUES (:url, :json)"), {"url": link, "json": json.dumps(post_json, ensure_ascii=False)})
+                            await db.commit()
+                            new_posts_for_push.append(post_json)
+                            scroll_saved += 1
+                    total_saved += scroll_saved
+                    logger.info("📊 Scroll %d/%d: %d visíveis, %d novos (dup: %d)", scroll_n + 1, max_scrolls, len(raw), scroll_saved, consecutive_dupes)
+                    if consecutive_dupes >= dupes_to_stop and scroll_n >= 3:
+                        logger.info("⏹️  %d dups consecutivas — fim.", consecutive_dupes)
+                        break
+
+                    # Hybrid scroll with anti-detection + jump-to-oldest
+                    if scroll_n < max_scrolls - 1:
+                        d = random.randint(scroll_delay_min, scroll_delay_max)
+                        if scroll_saved == 0 and scroll_n > 0:
+                            stale_infinite += 1
+                        else:
+                            stale_infinite = 0
+
+                        # Simula mouse humano entre scrolls (anti-detecção)
+                        if scroll_n % 3 == 0:
+                            w = await agent.page.evaluate("window.innerWidth")
+                            h = await agent.page.evaluate("window.innerHeight")
+                            mx = random.randint(w // 4, w * 3 // 4)
+                            my = random.randint(h // 4, h * 3 // 4)
+                            await agent.page.mouse.move(mx, my)
+
+                        if stale_infinite >= 5:
+                            # Salta pro último post visível no DOM pra forçar carregamento de mais antigos
+                            await agent.page.evaluate("""() => {
+                                const containers = document.querySelectorAll('.feed-shared-update-v2');
+                                if (containers.length > 0) {
+                                    containers[containers.length - 1].scrollIntoView({behavior: 'instant', block: 'center'});
+                                }
+                            }""")
+                            mode = "jump-oldest"
+                            stale_infinite = 0
+                        elif stale_infinite >= 3 and scroll_n % 8 == 0:
+                            await agent.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            mode = "infinite"
+                        elif stale_infinite >= 2:
+                            step = random.randint(200, 600)  # variável como humano
+                            await agent.page.evaluate(f"window.scrollBy(0, {step})")
+                            mode = f"incremental({step}px)"
+                        else:
+                            await agent.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            mode = "infinite"
+                        logger.info("⏳ Scroll %d→%d (%s, delay %ds)", scroll_n + 1, scroll_n + 2, mode, d)
+                        await agent.page.wait_for_timeout(d * 1000)
+            else:
+                raw = await agent.page.evaluate("""() => {
+                    const containers = document.querySelectorAll('.feed-shared-update-v2');
+                    const results = [];
+                    for (const c of containers) {
+                        const linkEl = c.querySelector('a[href*="/posts/"], a[href*="activity-"], a[href*="/feed/update/"]');
+                        const link = linkEl ? (linkEl.href || '') : '';
+                        const activityMatch = link.match(/activity[-:](\\d+)/) || (c.getAttribute('data-urn') || '').match(/activity:(\\d+)/);
+                        const activityId = activityMatch ? activityMatch[1] : '';
+                        const postUrl = link || (activityId ? 'https://www.linkedin.com/feed/update/urn:li:activity:' + activityId : '');
+                        const textEl = c.querySelector('.feed-shared-text, .feed-shared-text__text-visual, .feed-shared-update-v2__description, .update-components-text, .feed-shared-inline-show-more-text');
+                        const text = textEl ? textEl.innerText.trim() : '';
+                        const timeEl = c.querySelector('time');
+                        const date = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText) : '';
+                        const hashtags = [...text.matchAll(/#(\\w+)/g)].map(m => m[1]);
+                        if (postUrl && text) results.push({link: postUrl, content: text, date: date, hashtags: hashtags});
+                    }
+                    return results;
+                }""")
+                for p in raw:
+                    link = p.get("link") or ""
+                    if link in seen_urls: continue
+                    seen_urls.add(link)
+                    post_json = {"title": (p.get("content") or "")[:100].split("\n")[0].strip(), "link": link, "description": p.get("content") or "", "post_date": p.get("date") or "", "hashtags": p.get("hashtags") or []}
+                    result = await db.execute(text("SELECT id FROM raw_posts WHERE linkedin_url = :url"), {"url": link})
+                    if result.scalar_one_or_none():
+                        logger.info("⏹️  Primeiro dupe — parando (monitor).")
+                        break
+                    await db.execute(text("INSERT INTO raw_posts (linkedin_url, raw_json) VALUES (:url, :json)"), {"url": link, "json": json.dumps(post_json, ensure_ascii=False)})
+                    await db.commit()
+                    new_posts_for_push.append(post_json)
+                    total_saved += 1
+        logger.info("📊 Total salvo: %d posts", total_saved)
+
+    # --- Push para VM (se configurado) ---
+    push_url = os.environ.get("SYNC_PUSH_URL", "")
+    push_token = os.environ.get("SYNC_PUSH_TOKEN", "")
+    if push_url and total_saved > 0:
+        try:
+            import httpx
+            headers = {"Authorization": f"Bearer {push_token}"} if push_token else {}
+            r = httpx.post(f"{push_url.rstrip('/')}/api/sync/raw-posts", json={"posts": new_posts_for_push}, headers=headers, timeout=30)
+            result = r.json()
+            logger.info("📤 Push para VM: %d inseridos (de %d enviados)", result.get("inserted", 0), len(new_posts_for_push))
+        except Exception as e:
+            logger.warning("⚠️  Push para VM falhou: %s", e)
+
+    # --- FASE 4: classificar posts com Ollama ---
+    process_count = int(os.environ.get("PROCESS_COUNT", "10"))
+    logger.info("🤖 FASE 4: Classificando até %d posts com Ollama (%s)...", process_count, os.environ.get("OLLAMA_MODEL", ""))
+    logger.info("⏳ Isso pode levar vários minutos...")
+
+    from app.services.ollama_service import OllamaService
+    ollama = OllamaService()
+
+    async with async_session() as db:
+        result = await db.execute(
+            text("SELECT rp.id, rp.raw_json FROM raw_posts rp LEFT JOIN posts p ON p.linkedin_url = rp.linkedin_url WHERE p.id IS NULL ORDER BY rp.id LIMIT :limit"),
+            {"limit": process_count},
+        )
+        unprocessed = result.fetchall()
+        if not unprocessed:
+            logger.info("✅ Nenhum post pendente para classificar.")
+        else:
+            logger.info("📦 %d posts pendentes para processar.", len(unprocessed))
+            processed = 0
+            for row_id, raw_json in unprocessed:
+                content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
+                linkedin_url = raw_json.get("link", "")
+                logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(unprocessed), row_id)
+                classification = await ollama.classify_discipline(content)
+                confidence = classification["confidence"]
+                discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
+                school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
+                logger.info("  ↳ disciplina=%s (confiança=%d%%), school=%s", discipline_name, confidence, school_name or "—")
+
+                # Cria/encontra school primeiro
+                school_id = None
+                if school_name:
+                    sch_result = await db.execute(text("SELECT id FROM schools WHERE name = :name"), {"name": school_name})
+                    sch_row = sch_result.fetchone()
+                    if sch_row:
+                        school_id = sch_row[0]
+                    else:
+                        sch_result = await db.execute(text("INSERT INTO schools (name, slug) VALUES (:name, :slug) RETURNING id"), {"name": school_name, "slug": school_name.lower().replace(" ", "-")})
+                        school_id = sch_result.fetchone()[0]
+                        await db.commit()
+
+                disc_result = await db.execute(text("SELECT id, school_id FROM disciplines WHERE name = :name"), {"name": discipline_name})
+                disc_row = disc_result.fetchone()
+                if disc_row:
+                    discipline_id = disc_row[0]
+                    if disc_row[1] is None and school_id is not None:
+                        await db.execute(text("UPDATE disciplines SET school_id = :sid WHERE id = :did"), {"sid": school_id, "did": discipline_id})
+                        await db.commit()
+                else:
+                    disc_result = await db.execute(text("INSERT INTO disciplines (name, slug, school_id) VALUES (:name, :slug, :sid) RETURNING id"), {"name": discipline_name, "slug": discipline_name.lower().replace(" ", "-"), "sid": school_id})
+                    discipline_id = disc_result.fetchone()[0]
+                    await db.commit()
+                    logger.info("  ↳ Nova disciplina: %s (id=%d)", discipline_name, discipline_id)
+
+                title = (content or "")[:100].split("\n")[0].strip()
+                await db.execute(text("INSERT INTO posts (linkedin_url, title, content, discipline_id, school_id, indexed_at) VALUES (:url, :title, :content, :disc_id, :sch_id, NOW())"), {"url": linkedin_url, "title": title, "content": content, "disc_id": discipline_id, "sch_id": school_id})
+                await db.commit()
+                processed += 1
+            logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
+
+    logger.info("⏹️  Parando aqui (FASE 4).")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

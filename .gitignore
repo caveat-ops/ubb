@@ -1,0 +1,40 @@
+# ── Secrets ────────────────────────────────────
+.env
+
+# ── Python ─────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.sync-venv/
+*.egg-info/
+dist/
+build/
+
+# ── Node / Next.js ─────────────────────────────
+node_modules/
+.next/
+out/
+
+# ── Docker volumes / data ──────────────────────
+.linkedin_browser/
+.linkedin_cookies/
+
+# ── Logs ───────────────────────────────────────
+*.log
+sync.log
+
+# ── OS ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Misc ───────────────────────────────────────
+.cache/
+.deepseek/
+docker-compose.override.yml
+ideia_backend_universidade_bebe.md

@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.sync.txt .
+RUN pip install --no-cache-dir -r requirements.sync.txt
+
+COPY app/ ./app/
+COPY persona.md .
+COPY sync.py .
+
+ENTRYPOINT ["python", "sync.py"]
