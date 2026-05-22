@@ -9,6 +9,7 @@ from app.schemas import StatsOut
 router = APIRouter()
 
 
+@router.get("", response_model=StatsOut)
 @router.get("/", response_model=StatsOut)
 async def get_stats(db: AsyncSession = Depends(get_db)):
     total_posts = (await db.execute(select(func.count(Post.id)))).scalar() or 0

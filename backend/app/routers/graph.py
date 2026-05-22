@@ -29,6 +29,7 @@ GERAIS_COLOR = "#f59e0b"  # dourado/sol
 GERAIS_LAYER = 4
 
 
+@router.get("", response_model=GraphOut)
 @router.get("/", response_model=GraphOut)
 async def get_graph(db: AsyncSession = Depends(get_db)):
     # Busca disciplinas com contagem de posts
