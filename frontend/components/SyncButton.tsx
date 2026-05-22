@@ -26,6 +26,12 @@ export default function SyncButton() {
   }, []);
 
   const handleSync = useCallback(async () => {
+    if (available === false) {
+      setLogs(['ℹ️  Sync disponível apenas no ambiente de desenvolvimento.']);
+      setLogs(prev => [...prev, '   O sync é executado no host via cron e envia os dados para cá.']);
+      setDone(true);
+      return;
+    }
     setSyncing(true);
     setDone(false);
     setError(null);
@@ -89,7 +95,7 @@ export default function SyncButton() {
     }
   }, []);
 
-  if (available === false) return null;
+  // Sempre mostra o botão, mas com fallback se sync não disponível
 
   return (
     <>
@@ -160,8 +166,10 @@ export default function SyncButton() {
               style={{ background: '#070707', minHeight: '200px' }}
             >
               {logs.length === 0 ? (
-                <div className="flex items-center justify-center h-32 text-[#444]">
-                  Clique em "Iniciar Sync" para começar
+                <div className="flex items-center justify-center h-32 text-[#444] text-center px-4">
+                  {available === false
+                    ? 'Sync disponível apenas no ambiente de desenvolvimento.\nO conteúdo é sincronizado automaticamente via cron.'
+                    : 'Clique em "Iniciar Sync" para começar'}
                 </div>
               ) : (
                 logs.map((log, i) => (
