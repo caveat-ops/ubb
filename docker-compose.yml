@@ -29,7 +29,7 @@ services:
     environment:
       - VIRTUAL_HOST=${DOMAIN}
       - VIRTUAL_PATH=/api/
-      - VIRTUAL_DEST=/
+      - VIRTUAL_DEST=/api
       - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
     depends_on:
       db:
