@@ -7,8 +7,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from app.database import async_session
-from app.services.sync_runner import run_sync
-from app.services.task_manager import task_manager
 
 router = APIRouter()
 
@@ -53,6 +51,7 @@ async def receive_raw_posts(payload: dict, authorization: str = Header(None)):
 
 @router.post("")
 async def trigger_sync():
+    from app.services.task_manager import task_manager
     task_id = task_manager.create_task()
     task_manager.add_message(task_id, {"type": "info", "text": "Tarefa de sincronização criada"})
     asyncio.create_task(_run_sync_task(task_id))
@@ -60,6 +59,8 @@ async def trigger_sync():
 
 
 async def _run_sync_task(task_id: str):
+    from app.services.task_manager import task_manager
+    from app.services.sync_runner import run_sync
     def progress(text: str):
         task_manager.add_message(task_id, {"type": "progress", "text": text})
     try:
@@ -75,6 +76,7 @@ async def _run_sync_task(task_id: str):
 
 @router.get("/stream/{task_id}")
 async def sync_stream(task_id: str, request: Request):
+    from app.services.task_manager import task_manager
     async def event_generator():
         msg_index = 0
         while True:
@@ -100,6 +102,7 @@ async def sync_stream(task_id: str, request: Request):
 
 @router.get("/{task_id}")
 async def sync_status(task_id: str):
+    from app.services.task_manager import task_manager
     status = task_manager.get_status(task_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Task not found")

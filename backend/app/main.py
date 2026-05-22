@@ -7,19 +7,12 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import init_db
-from app.routers import disciplines, graph, invites, posts, raw_posts, search, stats
+from app.routers import disciplines, graph, invites, posts, raw_posts, search, stats, sync
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper()),
     format="%(levelname)s:     %(name)s - %(message)s",
 )
-
-try:
-    import playwright  # noqa: F401
-    from app.routers import sync
-    HAS_SYNC = True
-except ImportError:
-    HAS_SYNC = False
 
 
 @asynccontextmanager
