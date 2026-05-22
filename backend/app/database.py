@@ -37,6 +37,17 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Safety net: garante raw_posts mesmo que o modelo ORM falhe
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS raw_posts (
+                id SERIAL PRIMARY KEY,
+                linkedin_url VARCHAR(500) UNIQUE NOT NULL,
+                raw_json JSON,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+
 
 async def get_engine():
     return engine

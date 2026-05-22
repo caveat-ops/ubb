@@ -142,3 +142,12 @@ class InviteToken(Base):
     times_used = Column(Integer, default=0)
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class RawPost(Base):
+    __tablename__ = "raw_posts"
+
+    id = Column(Integer, primary_key=True)
+    linkedin_url = Column(String(500), unique=True, nullable=False)
+    raw_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
