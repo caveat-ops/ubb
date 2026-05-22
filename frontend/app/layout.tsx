@@ -11,11 +11,11 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'Universidade Bebê',
     description: 'Vem cá bebê, deixa eu te ensinar.',
-    images: [{ url: 'https://bolt.new/static/og_default.png' }],
+    images: [],
   },
   twitter: {
     card: 'summary_large_image',
-    images: [{ url: 'https://bolt.new/static/og_default.png' }],
+    images: [],
   },
 };
 
