@@ -1,4 +1,6 @@
-# UBB — Universal Brain Builder
+# UBB — Universidade Bebê (nome original)
+ou
+# UBB - Universal Brain Builder (coisas da IA)
 
 > **Menção honrosa:** este projeto existe por causa da [Mariana B S](https://www.linkedin.com/in/marianabsz). Foi o conteúdo dela — prolífico e, acima de tudo, profícuo — que me fez criar isso. Mas o indexador é agnóstico: funciona com qualquer perfil do LinkedIn.
 

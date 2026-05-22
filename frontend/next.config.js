@@ -6,14 +6,14 @@ const nextConfig = {
   images: { unoptimized: true },
   async headers() {
     const isDev = process.env.NODE_ENV !== 'production';
-    const corsOrigin = isDev
-      ? '*'
-      : process.env.CORS_ORIGIN || 'https://universidade-bebe.com';
+    const corsOrigin = isDev ? '*' : (process.env.CORS_ORIGIN || '*');
+    const domain = process.env.DOMAIN || 'localhost';
 
     return [
       {
         source: '/(.*)',
         headers: [
+          { key: 'Content-Security-Policy', value: `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://${domain} http://localhost:* ws://localhost:*; frame-ancestors 'none'; base-uri 'self'; form-action 'self'` },
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
