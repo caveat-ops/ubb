@@ -9,6 +9,7 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      - VIRTUAL_HOST=${DOMAIN}
       - VIRTUAL_PORT=3000
       - API_URL=http://api:8000
     depends_on:
