@@ -29,7 +29,7 @@ A qualidade vocês avaliam. Pra mim, o experimento é o que conta.
 | MVP inicial | < 5 minutos |
 | Backend + frontend conectados | ~15 minutos |
 | Ajustes finos | várias horas (dias) |
-| Total | ~2 dias de trabalho (eu codando enquanto fazia outras coisas — tenho contas pra pagar) |
+| Total | ~2 dias de trabalho (a IA codando enquanto eu fazia outras coisas pois tenho contas pra pagar) |
 
 ## Stack técnica
 
@@ -39,6 +39,7 @@ A qualidade vocês avaliam. Pra mim, o experimento é o que conta.
 - **Backend**: FastAPI + SQLAlchemy + PostgreSQL + pgvector
 - **Browser**: Playwright (extração do LinkedIn)
 - **LLM local**: Ollama (classificação de conteúdo)
+- **Modelo local**: qwen3:8b-32k
 - **Infra**: Docker Compose + nginx-proxy + LetsEncrypt
 
 ## Estrutura
@@ -60,6 +61,43 @@ ubb/
 ```
 
 ## Rodando local (dev)
+
+Antes de mais nada você precisa ter o override, pois eu não mando pro repo pois às vezes preciso colocar dados sensíveis ou expor portas que em prod não precisa expor:
+```docker-compose.override.yml
+services:
+  frontend:
+    user: root
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NODE_ENV=development
+      - NEXT_TELEMETRY_DISABLED=1
+      - WATCHPACK_POLLING=true
+    command: npm run dev
+
+  api:
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    environment:
+      - LOG_LEVEL=debug
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  db:
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+
+volumes:
+  pgdata_dev:
+```
 
 ```bash
 # Subir containers
@@ -87,7 +125,7 @@ SYNC_MODE=process PROCESS_COUNT=50 PYTHONPATH=. ../.sync-venv/bin/python sync.py
 # 1. Copiar docker-compose.yml e .env
 # 2. Ajustar .env:
 #    USE_EXTERNAL_NET=true
-#    EXTERNAL_NET=innovation
+#    EXTERNAL_NET=external-name
 #    SYNC_PUSH_TOKEN=<token-seguro>
 #    NEXT_PUBLIC_API_URL=https://seu-dominio.com
 #
@@ -111,7 +149,7 @@ O endpoint `POST /api/sync/raw-posts` na VM recebe e insere no banco.
 
 ```bash
 # Todo dia às 9h
-0 9 * * * cd /home/caveat/projetos/caveat/ubb && /home/caveat/projetos/caveat/ubb/.sync-venv/bin/python backend/sync.py --headless >> /home/caveat/projetos/caveat/ubb/sync.log 2>&1
+0 9 * * * cd /ubb && .sync-venv/bin/python backend/sync.py --headless >> sync.log 2>&1
 ```
 
 ## API Endpoints
