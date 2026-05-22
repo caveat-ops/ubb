@@ -187,6 +187,7 @@ async def main():
     parser.add_argument("--no-headless", action="store_false", dest="headless", help="Run browser with visible UI")
     parser.add_argument("--max-posts", type=int, default=20, help="Maximum number of posts to sync")
     parser.add_argument("--update-all", action="store_true", default=False, help="Re-process existing posts")
+    parser.add_argument("--push-all", action="store_true", default=False, help="Push all existing raw_posts to VM")
     parser.set_defaults(headless=None)
     args = parser.parse_args()
 
@@ -205,6 +206,30 @@ async def main():
     dupes_to_stop = int(os.environ.get("CONSECUTIVE_DUPES_TO_STOP", "5"))
     scroll_delay_min = int(os.environ.get("SCROLL_DELAY_MIN", "3"))
     scroll_delay_max = int(os.environ.get("SCROLL_DELAY_MAX", "8"))
+
+    if args.push_all:
+        # --- MODO PUSH-ALL: envia todos os raw_posts existentes pra VM ---
+        push_url = os.environ.get("SYNC_PUSH_URL", "")
+        push_token = os.environ.get("SYNC_PUSH_TOKEN", "")
+        if not push_url:
+            logger.error("SYNC_PUSH_URL não configurado no .env")
+            sys.exit(1)
+        logger.info("📤 Push-all: enviando todos os raw_posts para %s ...", push_url)
+        import httpx
+        async with async_session() as db:
+            result = await db.execute(text("SELECT raw_json FROM raw_posts ORDER BY id"))
+            all_posts = [row[0] for row in result.fetchall()]
+        headers = {"Authorization": f"Bearer {push_token}"} if push_token else {}
+        batch_size = 100
+        total_inserted = 0
+        for i in range(0, len(all_posts), batch_size):
+            batch = all_posts[i:i + batch_size]
+            r = httpx.post(f"{push_url.rstrip('/')}/api/sync/raw-posts", json={"posts": batch}, headers=headers, timeout=60)
+            result = r.json()
+            total_inserted += result.get("inserted", 0)
+            logger.info("📤 Lote %d/%d: %d inseridos", i // batch_size + 1, (len(all_posts) + batch_size - 1) // batch_size, result.get("inserted", 0))
+        logger.info("📤 Push-all completo: %d posts enviados", total_inserted)
+        return
 
     if sync_mode == "process":
         # --- MODO PROCESS-ONLY: pula extração, vai direto pra FASE 4 ---

@@ -55,8 +55,7 @@ app.include_router(graph.router, prefix="/api/graph", tags=["graph"])
 app.include_router(invites.router, prefix="/api/invites", tags=["invites"])
 app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 app.include_router(raw_posts.router, prefix="/api/raw-posts", tags=["raw-posts"])
-if HAS_SYNC:
-    app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
+app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
 
 
 @app.exception_handler(404)
@@ -78,7 +77,7 @@ async def root():
 
 @app.get("/api/sync-info")
 async def sync_info():
-    return {"available": HAS_SYNC}
+    return {"available": True}
 
 
 @app.get("/api/about")
