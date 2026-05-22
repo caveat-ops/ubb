@@ -128,14 +128,14 @@ export const api = {
     query: (q: string) => fetchAPI<SearchResults>(`/api/search?q=${encodeURIComponent(q)}`),
   },
   graph: {
-    get: () => fetchAPI<GraphData>(`/api/graph`),
+    get: () => fetchAPI<GraphData>(`/api/graph/`),
     discipline: (id: number) => fetchAPI<GraphData>(`/api/graph/discipline/${id}`),
   },
   about: {
     get: () => fetchAPI<{name: string; url: string}>('/api/about'),
   },
   stats: {
-    get: () => fetchAPI<Stats>(`/api/stats`),
+    get: () => fetchAPI<Stats>(`/api/stats/`),
   },
   rawPosts: {
     list: () => fetchAPI<RawPost[]>('/api/raw-posts'),
