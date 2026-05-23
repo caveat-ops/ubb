@@ -30,6 +30,8 @@ services:
       - .env
     environment:
       - VIRTUAL_HOST=${API_DOMAIN}
+      - LETSENCRYPT_HOST=${API_DOMAIN}
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
       - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
     depends_on:
       db:
