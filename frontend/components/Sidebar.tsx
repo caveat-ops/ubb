@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Image from 'next/image';
-import { Chrome as Home, BookOpen, FlaskConical, Route, Search, Bookmark, User, ChevronRight } from 'lucide-react';
+import { Chrome as Home, BookOpen, FlaskConical, Route, Search, Bookmark, User, ChevronRight, Github } from 'lucide-react';
 
 interface NavItem {
   icon: React.ElementType;
@@ -151,6 +151,22 @@ export default function Sidebar({ activeView, onNavigate, onSearchOpen }: Sideba
             </button>
           );
         })}
+      </div>
+
+      {/* GitHub link — discreto, abaixo dos itens de navegação */}
+      <div className="border-t border-[rgba(255,0,140,0.06)] py-2 px-2">
+        <a
+          href="https://github.com/caveat-ops/ubb"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-3 px-2 py-2 rounded-lg text-left transition-all duration-150"
+          style={{ color: '#555' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#9ca3af'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#555'; }}
+        >
+          <Github size={16} className="flex-shrink-0" />
+          {!collapsed && <span className="text-[12px] font-medium">GitHub</span>}
+        </a>
       </div>
 
       {/* Collapse toggle */}
