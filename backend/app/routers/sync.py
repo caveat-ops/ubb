@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from app.database import async_session
+from app.main import limiter
 
 router = APIRouter()
 
@@ -23,6 +24,7 @@ def _check_token(authorization: str = Header(None)) -> None:
 
 
 @router.post("/raw-posts")
+@limiter.limit("10/minute")
 async def receive_raw_posts(payload: dict, authorization: str = Header(None)):
     """Recebe raw_posts do host de sync e insere no banco da VM"""
     _check_token(authorization)
@@ -50,6 +52,7 @@ async def receive_raw_posts(payload: dict, authorization: str = Header(None)):
 
 
 @router.post("/seed")
+@limiter.limit("5/minute")
 async def receive_seed(payload: dict, authorization: str = Header(None)):
     """Recebe dump completo do banco (schools, disciplines, posts)"""
     _check_token(authorization)
