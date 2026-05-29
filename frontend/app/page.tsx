@@ -159,6 +159,41 @@ export default function Home() {
       />
 
       <main className="flex-1 min-w-0 overflow-x-hidden">
+        {/* Header com search box — visível em todas as views */}
+        <header
+          className="sticky top-0 z-30 flex items-center justify-end px-6 lg:px-10 h-12"
+          style={{
+            background: 'rgba(7,7,7,0.85)',
+            backdropFilter: 'blur(8px)',
+            borderBottom: '1px solid rgba(255,0,140,0.06)',
+          }}
+        >
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all duration-200"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#555',
+            }}
+            onMouseEnter={e => {
+              const el = e.currentTarget as HTMLButtonElement;
+              el.style.borderColor = 'rgba(255,0,140,0.3)';
+              el.style.color = '#cfcfcf';
+            }}
+            onMouseLeave={e => {
+              const el = e.currentTarget as HTMLButtonElement;
+              el.style.borderColor = 'rgba(255,255,255,0.08)';
+              el.style.color = '#555';
+            }}
+          >
+            <Search size={14} />
+            <span className="hidden sm:inline">Buscar...</span>
+            <kbd className="hidden sm:flex items-center gap-0.5 text-[10px] text-[#444] border border-[#333] rounded px-1 py-0.5 ml-2">
+              <span className="text-[11px]">⌘</span>K
+            </kbd>
+          </button>
+        </header>
         {renderMain()}
       </main>
 

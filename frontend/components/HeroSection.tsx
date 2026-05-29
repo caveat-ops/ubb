@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ArrowRight, Compass } from 'lucide-react';
+import { ArrowRight, Compass, Github } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
 
@@ -219,6 +219,30 @@ export default function HeroSection({ onNavigate, onSearchOpen, onGraphNavigate 
               <Compass size={15} />
               Explorar Disciplinas
             </button>
+            <a
+              href="https://github.com/caveat-ops/ubb"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200"
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                color: '#777',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(255,255,255,0.06)';
+                (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(255,255,255,0.15)';
+                (e.currentTarget as HTMLAnchorElement).style.color = '#cfcfcf';
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(255,255,255,0.04)';
+                (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(255,255,255,0.08)';
+                (e.currentTarget as HTMLAnchorElement).style.color = '#777';
+              }}
+            >
+              <Github size={15} />
+              GitHub
+            </a>
           </div>
 
           <div className="flex gap-8">
