@@ -5,6 +5,7 @@ __pycache__
 .git
 .gitignore
 *.md
+!persona.md
 Dockerfile
 .dockerignore
 .linkedin_cookies
