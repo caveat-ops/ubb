@@ -126,13 +126,39 @@ async def classify_discipline_gemini(content: str) -> dict:
 
     full_prompt = f"{system_msg}\n\n{user_msg}"
 
+    # Verifica autenticação antes de rodar
+    gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
+    gemini_model = os.environ.get("GEMINI_MODEL", "")
+    gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
+    settings_file = gemini_home / "settings.json"
+
+    if not gemini_api_key and not settings_file.exists():
+        logger.error(
+            "Gemini CLI sem autenticação. Configure uma das opções:\n"
+            "  1. GEMINI_API_KEY no .env (recomendado para containers)\n"
+            "  2. Rode 'gemini' interativamente no host para OAuth"
+        )
+        return {"discipline": "Gerais", "confidence": 0, "school": ""}
+
+    # Monta o comando e ambiente
+    cmd = ["gemini", "--skip-trust", "-y", "-p", full_prompt]
+    if gemini_model:
+        cmd.extend(["-m", gemini_model])
+
+    # Passa GEMINI_API_KEY explicitamente (subprocess herda os.environ, mas
+    # garantimos que a var esteja presente)
+    subprocess_env = os.environ.copy()
+    if gemini_api_key:
+        subprocess_env["GEMINI_API_KEY"] = gemini_api_key
+
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(
             None,
             lambda: subprocess.run(
-                ["gemini", "--skip-trust", "-y", "-p", full_prompt],
+                cmd,
                 capture_output=True, text=True, timeout=180,
+                env=subprocess_env,
             ),
         )
     except FileNotFoundError:
@@ -144,7 +170,15 @@ async def classify_discipline_gemini(content: str) -> dict:
 
     raw = result.stdout.strip()
     if not raw and result.stderr:
-        logger.error("Gemini CLI stderr: %s", result.stderr[:500])
+        stderr_first_line = result.stderr.strip().split("\n")[0]
+        # Se o erro é relacionado a auth, log mais enxuto
+        if "Auth method" in result.stderr or "GEMINI_API_KEY" in result.stderr:
+            logger.error(
+                "Gemini CLI: autenticação não configurada no container. "
+                "Defina GEMINI_API_KEY no .env."
+            )
+        else:
+            logger.error("Gemini CLI stderr: %s", result.stderr[:500])
         return {"discipline": "Gerais", "confidence": 0, "school": ""}
 
     # Tenta extrair JSON de code fences ou resposta crua
