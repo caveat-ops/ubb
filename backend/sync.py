@@ -379,7 +379,7 @@ async def main():
     # ── Gemini OAuth setup (interativo, sai depois) ──
     if args.gemini_setup:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-        ok = asyncio.run(gemini_setup_oauth())
+        ok = await gemini_setup_oauth()
         if ok:
             logger.info("✅ Gemini OAuth configurado. Agora pode rodar o sync normalmente.")
         else:
