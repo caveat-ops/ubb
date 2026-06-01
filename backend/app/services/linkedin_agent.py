@@ -80,9 +80,9 @@ class LinkedInAgent:
             logger.info("✅ Sessão válida (persistent context)")
             return True
 
-        logger.info("🔑 Fazendo login automático...")
+        logger.info("🔑 Fazendo login automático... (URL: %s)", self.page.url[:80])
 
-        await self.page.wait_for_selector("#username", state="visible", timeout=15000)
+        await self.page.wait_for_selector("#username", state="visible", timeout=30000)
         await self.page.fill("#username", self.email)
         await self.page.fill("#password", self.password)
         await self.page.click('[type="submit"]')
