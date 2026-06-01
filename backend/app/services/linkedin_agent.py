@@ -39,7 +39,9 @@ class LinkedInAgent:
             locale="pt-BR",
             timezone="America/Sao_Paulo",
         )
+        logger.info("🦊 Iniciando Firefox stealth (primeira execução baixa ~100MB — aguarde)...")
         self.context = await self._invisible.__aenter__()
+        logger.info("🦊 Firefox pronto.")
 
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
         logger.info("Browser ready. Initial page URL: %s", self.page.url[:80])
