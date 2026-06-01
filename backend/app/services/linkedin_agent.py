@@ -44,6 +44,7 @@ class LinkedInAgent:
         logger.info("🦊 Firefox pronto.")
 
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        await self.page.wait_for_timeout(1000)  # aguarda FF estabilizar (race condition about:newtab)
         logger.info("Browser ready. Initial page URL: %s", self.page.url[:80])
 
     async def login(self) -> bool:
