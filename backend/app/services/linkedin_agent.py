@@ -6,15 +6,19 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-PROFILE_DIR = Path("./.linkedin_browser")
+PROFILE_DIR_CHROMIUM = Path("./.linkedin_browser_chromium")
+PROFILE_DIR_FIREFOX  = Path("./.linkedin_browser_firefox")
 
 
 class LinkedInAgent:
-    def __init__(self, email: str, password: str, headless: bool = True):
+    def __init__(self, email: str, password: str, headless: bool = True, use_firefox: bool = False):
         self.email = email
         self.password = password
         self.headless = headless
+        self.use_firefox = use_firefox
+        self.profile_dir = PROFILE_DIR_FIREFOX if use_firefox else PROFILE_DIR_CHROMIUM
         self._invisible = None
+        self._playwright = None
         self.context = None
         self.page = None
 
@@ -28,23 +32,51 @@ class LinkedInAgent:
         if self.context is not None:
             return
 
-        from invisible_playwright.async_api import InvisiblePlaywright
-
         for lock in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
-            (PROFILE_DIR / lock).unlink(missing_ok=True)
+            (self.profile_dir / lock).unlink(missing_ok=True)
 
-        self._invisible = InvisiblePlaywright(
-            headless=self.headless,
-            profile_dir=PROFILE_DIR,
-            locale="pt-BR",
-            timezone="America/Sao_Paulo",
-        )
-        logger.info("🦊 Iniciando Firefox stealth (primeira execução baixa ~100MB — aguarde)...")
-        self.context = await self._invisible.__aenter__()
-        logger.info("🦊 Firefox pronto.")
+        if self.use_firefox:
+            from invisible_playwright.async_api import InvisiblePlaywright
+            self._invisible = InvisiblePlaywright(
+                headless=self.headless,
+                profile_dir=self.profile_dir,
+                locale="pt-BR",
+                timezone="America/Sao_Paulo",
+            )
+            logger.info("🦊 Iniciando Firefox stealth (primeira execução baixa ~100MB — aguarde)...")
+            self.context = await self._invisible.__aenter__()
+            logger.info("🦊 Firefox pronto.")
+        else:
+            from playwright.async_api import async_playwright
+            self._playwright = await async_playwright().start()
+            self.context = await self._playwright.chromium.launch_persistent_context(
+                str(self.profile_dir),
+                headless=self.headless,
+                viewport={"width": 1280, "height": 720},
+                locale="pt-BR",
+                timezone_id="America/Sao_Paulo",
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                window.chrome = { runtime: {} };
+                Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+            """)
+            logger.info("🌐 Chrome iniciado.")
 
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
-        await self.page.wait_for_timeout(1000)  # aguarda FF estabilizar (race condition about:newtab)
+        await self.page.wait_for_timeout(1000)
         logger.info("Browser ready. Initial page URL: %s", self.page.url[:80])
 
     async def login(self) -> bool:
@@ -342,4 +374,8 @@ class LinkedInAgent:
         if self._invisible is not None:
             await self._invisible.__aexit__(None, None, None)
             self._invisible = None
+        if self._playwright is not None:
+            await self.context.close()
+            await self._playwright.stop()
+            self._playwright = None
         self.context = None

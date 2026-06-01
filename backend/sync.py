@@ -281,6 +281,7 @@ async def main():
         help="LLM classifier to use (default: ollama, or set CLASSIFIER env var)"
     )
     parser.add_argument("--no-push", action="store_true", default=False, help="Skip push to remote VM (auto-enabled when NODE_ENV=production)")
+    parser.add_argument("--firefox", action="store_true", default=False, help="Use Firefox stealth (invisible_playwright) instead of Chromium")
     parser.set_defaults(headless=None)
     args = parser.parse_args()
 
@@ -490,7 +491,7 @@ async def main():
         await db.commit()
     logger.info("✅ Banco pronto")
 
-    async with LinkedInAgent(email=linkedin_email, password=linkedin_password, headless=headless) as agent:
+    async with LinkedInAgent(email=linkedin_email, password=linkedin_password, headless=headless, use_firefox=args.firefox) as agent:
         logged_in = await agent.login()
         if not logged_in:
             logger.error("LinkedIn login failed")
