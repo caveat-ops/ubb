@@ -63,22 +63,37 @@ class LinkedInAgent:
 
         logger.info("🔑 Fazendo login automático... (URL: %s)", self.page.url[:80])
 
-        # Fecha modais (ex: Google Sign-in) que podem sobrepor o formulário
-        await self.page.keyboard.press("Escape")
-        await self.page.wait_for_timeout(1000)
+        # Remove overlay do Google Sign-in que cobre o formulário de email/senha.
+        # Identifica divs fixed/absolute de alto z-index que não contêm os inputs de login.
+        dismissed = await self.page.evaluate("""() => {
+            let removed = 0;
+            document.querySelectorAll('*').forEach(el => {
+                const s = window.getComputedStyle(el);
+                const z = parseInt(s.zIndex) || 0;
+                if ((s.position === 'fixed' || s.position === 'absolute') && z > 50) {
+                    if (!el.querySelector('input[type="email"], input[type="password"]')) {
+                        el.style.display = 'none';
+                        removed++;
+                    }
+                }
+            });
+            return removed;
+        }""")
+        if dismissed:
+            logger.info("  ↳ %d overlay(s) removido(s)", dismissed)
+        await self.page.wait_for_timeout(500)
 
         # LinkedIn muda seletores com frequência — lista acumulada por ordem de prioridade
-        # state="attached": aceita mesmo que o campo esteja oculto por um overlay
         username_selectors = [
-            'input[autocomplete="username"]',       # 2025-06 (React dynamic IDs)
+            'input[autocomplete="username"]',           # 2025-06 (React dynamic IDs)
             'input[autocomplete="username webauthn"]',
-            "#username",                             # seletor clássico (pode voltar)
+            "#username",                                 # seletor clássico (pode voltar)
             'input[name="session_key"]',
             'input[type="email"]',
         ]
         password_selectors = [
-            'input[autocomplete="current-password"]',  # 2025-06 (React dynamic IDs)
-            "#password",                                # seletor clássico (pode voltar)
+            'input[autocomplete="current-password"]',   # 2025-06 (React dynamic IDs)
+            "#password",                                 # seletor clássico (pode voltar)
             'input[name="session_password"]',
             'input[type="password"]',
         ]
@@ -86,7 +101,7 @@ class LinkedInAgent:
         async def _find_field(selectors: list[str], label: str) -> str | None:
             for sel in selectors:
                 try:
-                    await self.page.wait_for_selector(sel, state="attached", timeout=5000)
+                    await self.page.wait_for_selector(sel, state="visible", timeout=5000)
                     logger.info("  ↳ Campo %s encontrado: %s", label, sel)
                     return sel
                 except Exception:
@@ -103,8 +118,8 @@ class LinkedInAgent:
             logger.error("   URL atual: %s | Título: %s", self.page.url, await self.page.title())
             return False
 
-        await self.page.fill(username_field, self.email, force=True)
-        await self.page.fill(password_field, self.password, force=True)
+        await self.page.fill(username_field, self.email)
+        await self.page.fill(password_field, self.password)
         # LinkedIn removeu type="submit" — Enter no campo de senha é mais robusto
         await self.page.press(password_field, "Enter")
 
