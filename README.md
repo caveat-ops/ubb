@@ -108,16 +108,114 @@ docker compose up -d
 python3 -m venv .sync-venv
 .sync-venv/bin/pip install -r backend/requirements.sync.txt
 .sync-venv/bin/playwright install chromium
-
-# Rodar sync (modo capture = pegar tudo)
-cd backend && PYTHONPATH=. ../.sync-venv/bin/python sync.py --headless
-
-# Modo monitor (só novos posts, diário)
-SYNC_MODE=monitor PYTHONPATH=. ../.sync-venv/bin/python sync.py --headless
-
-# Só classificar (process-only, sem navegador)
-SYNC_MODE=process PROCESS_COUNT=50 PYTHONPATH=. ../.sync-venv/bin/python sync.py --headless
+# Para Firefox stealth (opcional):
+.sync-venv/bin/playwright install firefox
 ```
+
+## Sync — referência completa
+
+O script `backend/sync.py` extrai posts do LinkedIn, classifica com LLM e faz push para a VM. Roda no **host** (não no container), acessando o banco local e o Ollama/Gemini CLI.
+
+### Comando base
+
+```bash
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py [flags]
+```
+
+### Flags
+
+| Flag | Padrão | Descrição |
+|------|--------|-----------|
+| `--headless` | — | Força modo headless (navegador invisível) |
+| `--no-headless` | — | Força modo visível (útil pra debug/OAuth) |
+| `--firefox` | `false` | Usa Firefox stealth (`invisible_playwright`) em vez de Chromium |
+| `--classifier {ollama,gemini}` | `ollama` | LLM para classificação de posts |
+| `--max-posts N` | `20` | Máximo de posts a extrair por execução |
+| `--update-all` | `false` | Reprocessa posts já existentes no banco |
+| `--push-all` | `false` | Envia TODOS os raw_posts e dados classificados pra VM (modo bulk) |
+| `--no-push` | `false` | Pula push para VM remota (auto em produção) |
+
+### Modos de operação (`SYNC_MODE`)
+
+| Modo | Descrição | Usa navegador? |
+|------|-----------|----------------|
+| `monitor` ★ | Extrai só posts novos, para no primeiro duplicado | Sim |
+| `capture` | Scrolla o feed inteiro, varredura completa | Sim |
+| `process` | Só classifica posts pendentes no banco | **Não** |
+
+★ `monitor` é o padrão. Ideal pra cron diário.
+
+### Exemplos de execução
+
+```bash
+# ── Modo monitor (diário) ──────────────────────────────
+
+# Chromium + Ollama (padrão)
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --no-headless
+
+# Firefox + Ollama (stealth, evita detecção)
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --no-headless --firefox
+
+# Chromium + Gemini CLI (classificação mais rápida)
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --no-headless --classifier gemini
+
+# Firefox + Gemini (stealth + classificação rápida)
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --no-headless --firefox --classifier gemini
+
+# Headless (pra cron)
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --headless
+
+# ── Modo capture (varredura completa) ───────────────────
+
+SYNC_MODE=capture MAX_SCROLLS=80 PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --no-headless
+
+# ── Modo process-only (sem navegador) ───────────────────
+
+# Classificar 50 posts pendentes com Ollama
+SYNC_MODE=process PROCESS_COUNT=50 PYTHONPATH=backend .sync-venv/bin/python backend/sync.py
+
+# Classificar com Gemini
+SYNC_MODE=process PROCESS_COUNT=50 PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --classifier gemini
+
+# ── Push-all (bulk para VM) ─────────────────────────────
+
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --push-all
+
+# ── Reprocessar existentes ──────────────────────────────
+
+PYTHONPATH=backend .sync-venv/bin/python backend/sync.py --update-all --classifier gemini
+```
+
+### Combinações testadas
+
+Todas as 4 combinações browser × classificador funcionam:
+
+| Browser | Classificador | Comando |
+|---------|---------------|---------|
+| Chromium | Ollama | `--no-headless` |
+| Chromium | Gemini | `--no-headless --classifier gemini` |
+| Firefox | Ollama | `--no-headless --firefox` |
+| Firefox | Gemini | `--no-headless --firefox --classifier gemini` |
+
+### Variáveis de ambiente do sync
+
+| Var | Padrão | Descrição |
+|-----|--------|-----------|
+| `SYNC_MODE` | `monitor` | Modo: `capture`, `monitor`, `process` |
+| `URL_TARGET` | — | URL do perfil/recent-activity no LinkedIn |
+| `LINKEDIN_EMAIL` | — | Email da conta LinkedIn |
+| `LINKEDIN_PASSWORD` | — | Senha da conta LinkedIn |
+| `PLAYWRIGHT_HEADLESS` | `false` | Headless mode (quando não usa flag explícita) |
+| `CLASSIFIER` | `ollama` | Classificador padrão: `ollama` ou `gemini` |
+| `MAX_SCROLLS` | `40` | Scrolls máximos no modo capture |
+| `CONSECUTIVE_DUPES_TO_STOP` | `5` | Dups consecutivas antes de parar |
+| `SCROLL_DELAY_MIN` | `3` | Delay mínimo entre scrolls (segundos) |
+| `SCROLL_DELAY_MAX` | `8` | Delay máximo entre scrolls (segundos) |
+| `PROCESS_COUNT` | `10` | Posts a classificar por execução |
+| `OLLAMA_HOST` | `http://localhost:11434` | Endereço do Ollama |
+| `OLLAMA_MODEL` | — | Modelo Ollama (ex: `qwen3:8b-32k`) |
+| `SYNC_PUSH_URL` | — | URL da VM para push |
+| `SYNC_PUSH_TOKEN` | — | Token de autenticação do push |
 
 ## Deploy (VM com nginx-proxy)
 
