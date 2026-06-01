@@ -498,7 +498,22 @@ async def main():
             sys.exit(1)
         logger.info("✅ Login bem-sucedido!")
         logger.info("🌐 Navegando para URL_TARGET: %s", url_target)
-        await agent.page.goto(url_target, wait_until="domcontentloaded", timeout=30000)
+
+        # Firefox/invisible_playwright pode crashar com erro de frame tracking
+        # ao navegar direto pós-login. Navegar primeiro para about:blank limpa
+        # o estado de frames e evita o crash.
+        try:
+            await agent.page.goto("about:blank", wait_until="commit", timeout=10000)
+            await agent.page.wait_for_timeout(1000)
+        except Exception:
+            pass  # about:blank pode falhar se conexão já caiu, mas tentamos o target mesmo assim
+
+        try:
+            await agent.page.goto(url_target, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            logger.error("❌ Falha ao navegar para URL_TARGET: %s", e)
+            return
+
         await agent.page.wait_for_timeout(3000)
         logger.info("📄 Página carregada: %s", (await agent.page.title())[:100])
         logger.info("📍 URL atual: %s", agent.page.url[:100])
@@ -507,28 +522,37 @@ async def main():
         new_posts_for_push = []
         seen_urls = set()
 
+        # Firefox com invisible_playwright respeita CSP e bloqueia page.evaluate().
+        # Usamos métodos alternativos via locator API (sem eval) nesse caso.
+        no_eval = args.firefox
+
         async with async_session() as db:
             if sync_mode == "capture":
                 stale_infinite = 0
                 for scroll_n in range(max_scrolls):
-                    raw = await agent.page.evaluate("""() => {
-                        const containers = document.querySelectorAll('.feed-shared-update-v2');
-                        const results = [];
-                        for (const c of containers) {
-                            const linkEl = c.querySelector('a[href*="/posts/"], a[href*="activity-"], a[href*="/feed/update/"]');
-                            const link = linkEl ? (linkEl.href || '') : '';
-                            const activityMatch = link.match(/activity[-:](\\d+)/) || (c.getAttribute('data-urn') || '').match(/activity:(\\d+)/);
-                            const activityId = activityMatch ? activityMatch[1] : '';
-                            const postUrl = link || (activityId ? 'https://www.linkedin.com/feed/update/urn:li:activity:' + activityId : '');
-                            const textEl = c.querySelector('.feed-shared-text, .feed-shared-text__text-visual, .feed-shared-update-v2__description, .update-components-text, .feed-shared-inline-show-more-text');
-                            const text = textEl ? textEl.innerText.trim() : '';
-                            const timeEl = c.querySelector('time');
-                            const date = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText) : '';
-                            const hashtags = [...text.matchAll(/#(\\w+)/g)].map(m => m[1]);
-                            if (postUrl && text) results.push({link: postUrl, content: text, date: date, hashtags: hashtags});
-                        }
-                        return results;
-                    }""")
+                    if no_eval:
+                        raw = await agent.extract_feed_posts_no_eval()
+                    else:
+                        raw = await agent.page.evaluate(
+                            """() => {
+                            const containers = document.querySelectorAll('.feed-shared-update-v2');
+                            const results = [];
+                            for (const c of containers) {
+                                const linkEl = c.querySelector('a[href*="/posts/"], a[href*="activity-"], a[href*="/feed/update/"]');
+                                const link = linkEl ? (linkEl.href || '') : '';
+                                const activityMatch = link.match(/activity[-:](\\d+)/) || (c.getAttribute('data-urn') || '').match(/activity:(\\d+)/);
+                                const activityId = activityMatch ? activityMatch[1] : '';
+                                const postUrl = link || (activityId ? 'https://www.linkedin.com/feed/update/urn:li:activity:' + activityId : '');
+                                const textEl = c.querySelector('.feed-shared-text, .feed-shared-text__text-visual, .feed-shared-update-v2__description, .update-components-text, .feed-shared-inline-show-more-text');
+                                const text = textEl ? textEl.innerText.trim() : '';
+                                const timeEl = c.querySelector('time');
+                                const date = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText) : '';
+                                const hashtags = [...text.matchAll(/#(\\w+)/g)].map(m => m[1]);
+                                if (postUrl && text) results.push({link: postUrl, content: text, date: date, hashtags: hashtags});
+                            }
+                            return results;
+                        }"""
+                        )
                     consecutive_dupes = 0
                     scroll_saved = 0
                     for p in raw:
@@ -561,53 +585,54 @@ async def main():
 
                         # Simula mouse humano entre scrolls (anti-detecção)
                         if scroll_n % 3 == 0:
-                            w = await agent.page.evaluate("window.innerWidth")
-                            h = await agent.page.evaluate("window.innerHeight")
-                            mx = random.randint(w // 4, w * 3 // 4)
-                            my = random.randint(h // 4, h * 3 // 4)
+                            vp = agent.page.viewport_size or {"width": 1280, "height": 720}
+                            mx = random.randint(vp["width"] // 4, vp["width"] * 3 // 4)
+                            my = random.randint(vp["height"] // 4, vp["height"] * 3 // 4)
                             await agent.page.mouse.move(mx, my)
 
                         if stale_infinite >= 5:
                             # Salta pro último post visível no DOM pra forçar carregamento de mais antigos
-                            await agent.page.evaluate("""() => {
-                                const containers = document.querySelectorAll('.feed-shared-update-v2');
-                                if (containers.length > 0) {
-                                    containers[containers.length - 1].scrollIntoView({behavior: 'instant', block: 'center'});
-                                }
-                            }""")
+                            last_post = agent.page.locator('.feed-shared-update-v2').last
+                            if await last_post.count():
+                                await last_post.scroll_into_view_if_needed()
                             mode = "jump-oldest"
                             stale_infinite = 0
                         elif stale_infinite >= 3 and scroll_n % 8 == 0:
-                            await agent.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await agent.page.keyboard.press("End")
                             mode = "infinite"
                         elif stale_infinite >= 2:
                             step = random.randint(200, 600)  # variável como humano
-                            await agent.page.evaluate(f"window.scrollBy(0, {step})")
+                            await agent.page.mouse.wheel(0, step)
                             mode = f"incremental({step}px)"
                         else:
-                            await agent.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await agent.page.keyboard.press("End")
                             mode = "infinite"
                         logger.info("⏳ Scroll %d→%d (%s, delay %ds)", scroll_n + 1, scroll_n + 2, mode, d)
                         await agent.page.wait_for_timeout(d * 1000)
             else:
-                raw = await agent.page.evaluate("""() => {
-                    const containers = document.querySelectorAll('.feed-shared-update-v2');
-                    const results = [];
-                    for (const c of containers) {
-                        const linkEl = c.querySelector('a[href*="/posts/"], a[href*="activity-"], a[href*="/feed/update/"]');
-                        const link = linkEl ? (linkEl.href || '') : '';
-                        const activityMatch = link.match(/activity[-:](\\d+)/) || (c.getAttribute('data-urn') || '').match(/activity:(\\d+)/);
-                        const activityId = activityMatch ? activityMatch[1] : '';
-                        const postUrl = link || (activityId ? 'https://www.linkedin.com/feed/update/urn:li:activity:' + activityId : '');
-                        const textEl = c.querySelector('.feed-shared-text, .feed-shared-text__text-visual, .feed-shared-update-v2__description, .update-components-text, .feed-shared-inline-show-more-text');
-                        const text = textEl ? textEl.innerText.trim() : '';
-                        const timeEl = c.querySelector('time');
-                        const date = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText) : '';
-                        const hashtags = [...text.matchAll(/#(\\w+)/g)].map(m => m[1]);
-                        if (postUrl && text) results.push({link: postUrl, content: text, date: date, hashtags: hashtags});
-                    }
-                    return results;
-                }""")
+                if no_eval:
+                    raw = await agent.extract_feed_posts_no_eval()
+                else:
+                    raw = await agent.page.evaluate(
+                        """() => {
+                        const containers = document.querySelectorAll('.feed-shared-update-v2');
+                        const results = [];
+                        for (const c of containers) {
+                            const linkEl = c.querySelector('a[href*="/posts/"], a[href*="activity-"], a[href*="/feed/update/"]');
+                            const link = linkEl ? (linkEl.href || '') : '';
+                            const activityMatch = link.match(/activity[-:](\\d+)/) || (c.getAttribute('data-urn') || '').match(/activity:(\\d+)/);
+                            const activityId = activityMatch ? activityMatch[1] : '';
+                            const postUrl = link || (activityId ? 'https://www.linkedin.com/feed/update/urn:li:activity:' + activityId : '');
+                            const textEl = c.querySelector('.feed-shared-text, .feed-shared-text__text-visual, .feed-shared-update-v2__description, .update-components-text, .feed-shared-inline-show-more-text');
+                            const text = textEl ? textEl.innerText.trim() : '';
+                            const timeEl = c.querySelector('time');
+                            const date = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText) : '';
+                            const hashtags = [...text.matchAll(/#(\\w+)/g)].map(m => m[1]);
+                            if (postUrl && text) results.push({link: postUrl, content: text, date: date, hashtags: hashtags});
+                        }
+                        return results;
+                    }"""
+                    )
                 for p in raw:
                     link = p.get("link") or ""
                     if link in seen_urls: continue
