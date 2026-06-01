@@ -69,6 +69,7 @@ services:
     volumes:
       - ./.linkedin_browser:/app/.linkedin_browser
       - gemini-config:/root/.gemini
+      - firefox-cache:/root/.cache/invisible-playwright
     depends_on:
       db:
         condition: service_healthy
@@ -80,6 +81,7 @@ services:
 volumes:
   pgdata:
   gemini-config:
+  firefox-cache:
 
 networks:
   external-net:

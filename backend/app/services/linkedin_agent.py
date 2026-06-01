@@ -4,8 +4,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import async_playwright
-
 logger = logging.getLogger(__name__)
 
 PROFILE_DIR = Path("./.linkedin_browser")
@@ -16,7 +14,7 @@ class LinkedInAgent:
         self.email = email
         self.password = password
         self.headless = headless
-        self._playwright = None
+        self._invisible = None
         self.context = None
         self.page = None
 
@@ -30,38 +28,18 @@ class LinkedInAgent:
         if self.context is not None:
             return
 
-        self._playwright = await async_playwright().start()
+        from invisible_playwright import InvisiblePlaywright
 
         for lock in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
             (PROFILE_DIR / lock).unlink(missing_ok=True)
 
-        self.context = await self._playwright.chromium.launch_persistent_context(
-            str(PROFILE_DIR),
+        self._invisible = InvisiblePlaywright(
             headless=self.headless,
-            viewport={"width": 1280, "height": 720},
+            profile_dir=PROFILE_DIR,
             locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
+            timezone="America/Sao_Paulo",
         )
-
-        await self.context.add_init_script(
-            """
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {} };
-            Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
-            Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
-            """
-        )
+        self.context = await self._invisible.__aenter__()
 
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
         logger.info("Browser ready. Initial page URL: %s", self.page.url[:80])
@@ -303,9 +281,7 @@ class LinkedInAgent:
         return url.rstrip("/").split("/")[-1] if url else ""
 
     async def close(self):
-        if self.context:
-            await self.context.close()
-            self.context = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
+        if self._invisible is not None:
+            await self._invisible.__aexit__(None, None, None)
+            self._invisible = None
+        self.context = None
