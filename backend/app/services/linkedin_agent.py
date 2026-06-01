@@ -105,7 +105,8 @@ class LinkedInAgent:
 
         await self.page.fill(username_field, self.email, force=True)
         await self.page.fill(password_field, self.password, force=True)
-        await self.page.click('[type="submit"]')
+        # LinkedIn removeu type="submit" — Enter no campo de senha é mais robusto
+        await self.page.press(password_field, "Enter")
 
         try:
             await self.page.wait_for_load_state("networkidle", timeout=20000)
