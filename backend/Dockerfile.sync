@@ -14,5 +14,9 @@ RUN pip install --no-cache-dir -r requirements.api.txt -r requirements.sync.txt
 COPY app/ ./app/
 COPY persona.md .
 COPY sync.py .
+COPY scheduler.sh .
+RUN chmod +x scheduler.sh
 
-ENTRYPOINT ["python", "sync.py"]
+# Entrypoint padrão: scheduler (roda 3x/dia nos horários do SYNC_SCHEDULE)
+# Para execução manual: docker compose run --rm sync python sync.py --headless
+ENTRYPOINT ["./scheduler.sh"]

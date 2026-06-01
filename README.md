@@ -260,8 +260,38 @@ Depois do setup, o sync roda normalmente (o token OAuth fica persistido no volum
 | `PROCESS_COUNT` | `10` | Posts a classificar por execução |
 | `OLLAMA_HOST` | `http://localhost:11434` | Endereço do Ollama |
 | `OLLAMA_MODEL` | — | Modelo Ollama (ex: `qwen3:8b-32k`) |
+| `TZ` | `America/Recife` | Fuso horário dos containers |
+| `SYNC_SCHEDULE` | `08:00,14:00,20:00` | Horários do scheduler (HH:MM separados por vírgula) |
+| `SYNC_ARGS` | `--headless` | Argumentos extras para sync.py no scheduler |
 | `SYNC_PUSH_URL` | — | URL da VM para push |
 | `SYNC_PUSH_TOKEN` | — | Token de autenticação do push |
+
+## Scheduler (produção)
+
+O sync roda automaticamente 3x ao dia (8h, 14h, 20h) via scheduler interno. O container `sync` fica sempre ativo, dormindo entre execuções.
+
+```bash
+# Horários customizados (opcional):
+SYNC_SCHEDULE=08:00,14:00,20:00  # padrão
+SYNC_ARGS="--headless --classifier gemini"  # argumentos extras (opcional)
+```
+
+Para rodar manualmente (fora do scheduler):
+
+```bash
+docker compose run --rm sync python sync.py --headless
+# ou com flags:
+docker compose run --rm sync python sync.py --headless --firefox
+```
+
+### Fuso horário
+
+Todos os containers usam `TZ=America/Recife` (configurável no `.env`).
+
+```bash
+# .env
+TZ=America/Recife
+```
 
 ## Deploy (VM com nginx-proxy)
 
@@ -289,13 +319,6 @@ SYNC_PUSH_TOKEN=<mesmo-token-da-vm>
 ```
 
 O endpoint `POST /api/sync/raw-posts` na VM recebe e insere no banco.
-
-## Cron (no host)
-
-```bash
-# Todo dia às 9h
-0 9 * * * cd /ubb && .sync-venv/bin/python backend/sync.py --headless >> sync.log 2>&1
-```
 
 ## API Endpoints
 

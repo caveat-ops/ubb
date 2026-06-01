@@ -11,6 +11,7 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      - TZ=${TZ:-America/Recife}
       - VIRTUAL_HOST=${DOMAIN}
       - VIRTUAL_PORT=3000
       - LETSENCRYPT_HOST=${DOMAIN}
@@ -29,6 +30,7 @@ services:
     env_file:
       - .env
     environment:
+      - TZ=${TZ:-America/Recife}
       - VIRTUAL_HOST=${API_DOMAIN}
       - LETSENCRYPT_HOST=${API_DOMAIN}
       - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
@@ -46,6 +48,7 @@ services:
       POSTGRES_DB: ubb
       POSTGRES_USER: ubb
       POSTGRES_PASSWORD: ubb
+      TZ: ${TZ:-America/Recife}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -64,9 +67,12 @@ services:
     env_file:
       - .env
     environment:
+      - TZ=${TZ:-America/Recife}
       - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
       - CLASSIFIER=gemini
       - MOZ_DISABLE_CONTENT_SANDBOX=1
+      - SYNC_SCHEDULE=${SYNC_SCHEDULE:-08:00,14:00,20:00}
+      - SYNC_ARGS=${SYNC_ARGS:---headless}
     security_opt:
       - seccomp:unconfined
     volumes:
@@ -76,10 +82,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - external-net
-    profiles:
-      - sync
 
 volumes:
   pgdata:
