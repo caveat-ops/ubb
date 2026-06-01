@@ -9,7 +9,11 @@ SYNC_ARGS="${SYNC_ARGS:---headless}"
 LOG_FILE="${LOG_FILE:-/dev/stdout}"
 
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S %Z') [scheduler] $*" | tee -a "$LOG_FILE"
+    if [ "$LOG_FILE" = "/dev/stdout" ] || [ -z "$LOG_FILE" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S %Z') [scheduler] $*"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S %Z') [scheduler] $*" | tee -a "$LOG_FILE"
+    fi
 }
 
 log "🕐 Scheduler iniciado — horários: $SCHEDULE_TIMES (TZ=${TZ:-America/Recife})"
@@ -45,12 +49,17 @@ while true; do
     sleep "$SLEEP_SEC"
 
     log "🚀 Executando sync.py $SYNC_ARGS ..."
-    if python sync.py $SYNC_ARGS 2>&1 | while IFS= read -r line; do
-        echo "$line" | tee -a "$LOG_FILE"
-    done; then
+    if [ "$LOG_FILE" = "/dev/stdout" ] || [ -z "$LOG_FILE" ]; then
+        python sync.py $SYNC_ARGS 2>&1
+        EXIT_CODE=$?
+    else
+        python sync.py $SYNC_ARGS 2>&1 | tee -a "$LOG_FILE"
+        EXIT_CODE=${PIPESTATUS[0]}
+    fi
+    if [ "$EXIT_CODE" -eq 0 ]; then
         log "✅ sync.py concluído com sucesso"
     else
-        log "⚠️  sync.py terminou com erro (exit code: $?)"
+        log "⚠️  sync.py terminou com erro (exit code: $EXIT_CODE)"
     fi
 
     # Pequena pausa pra evitar loop apertado se sync falhar instantaneamente
