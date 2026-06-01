@@ -66,6 +66,9 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
       - CLASSIFIER=gemini
+      - MOZ_DISABLE_CONTENT_SANDBOX=1
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - ./.linkedin_browser:/app/.linkedin_browser
       - gemini-config:/root/.gemini
