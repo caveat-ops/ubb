@@ -38,3 +38,7 @@ Thumbs.db
 .deepseek/
 docker-compose.override.yml
 ideia_backend_universidade_bebe.md
+claude.session
+.claude
+.bolt*
+.linkedin*
