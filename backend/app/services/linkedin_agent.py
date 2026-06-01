@@ -28,7 +28,7 @@ class LinkedInAgent:
         if self.context is not None:
             return
 
-        from invisible_playwright import InvisiblePlaywright
+        from invisible_playwright.async_api import InvisiblePlaywright
 
         for lock in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
             (PROFILE_DIR / lock).unlink(missing_ok=True)
