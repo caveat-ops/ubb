@@ -67,12 +67,19 @@ class LinkedInAgent:
         await self.page.keyboard.press("Escape")
         await self.page.wait_for_timeout(1000)
 
-        # Tenta múltiplos seletores para o campo de email
-        username_selectors = ["#username", 'input[name="session_key"]', 'input[autocomplete="username"]', 'input[type="email"]']
+        # LinkedIn usa IDs dinâmicos do React — busca por atributos estáveis
+        # state="attached": aceita mesmo que o campo esteja oculto por um overlay
+        username_selectors = [
+            'input[autocomplete="username"]',
+            'input[autocomplete="username webauthn"]',
+            "#username",
+            'input[name="session_key"]',
+            'input[type="email"]',
+        ]
         username_field = None
         for sel in username_selectors:
             try:
-                await self.page.wait_for_selector(sel, state="visible", timeout=5000)
+                await self.page.wait_for_selector(sel, state="attached", timeout=5000)
                 username_field = sel
                 logger.info("  ↳ Campo de email encontrado: %s", sel)
                 break
@@ -80,16 +87,14 @@ class LinkedInAgent:
                 continue
 
         if not username_field:
-            # Salva dump da página para debug
             dump_path = Path(".linkedin_login_debug.html")
             dump_path.write_text(await self.page.content(), encoding="utf-8")
             logger.error("❌ Campo de email não encontrado. HTML salvo em %s", dump_path)
-            logger.error("   URL atual: %s", self.page.url)
-            logger.error("   Título: %s", await self.page.title())
+            logger.error("   URL atual: %s | Título: %s", self.page.url, await self.page.title())
             return False
 
-        await self.page.fill(username_field, self.email)
-        await self.page.fill("#password", self.password)
+        await self.page.fill(username_field, self.email, force=True)
+        await self.page.fill('input[autocomplete="current-password"]', self.password, force=True)
         await self.page.click('[type="submit"]')
 
         try:
