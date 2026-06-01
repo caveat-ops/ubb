@@ -63,8 +63,32 @@ class LinkedInAgent:
 
         logger.info("🔑 Fazendo login automático... (URL: %s)", self.page.url[:80])
 
-        await self.page.wait_for_selector("#username", state="visible", timeout=30000)
-        await self.page.fill("#username", self.email)
+        # Fecha modais (ex: Google Sign-in) que podem sobrepor o formulário
+        await self.page.keyboard.press("Escape")
+        await self.page.wait_for_timeout(1000)
+
+        # Tenta múltiplos seletores para o campo de email
+        username_selectors = ["#username", 'input[name="session_key"]', 'input[autocomplete="username"]', 'input[type="email"]']
+        username_field = None
+        for sel in username_selectors:
+            try:
+                await self.page.wait_for_selector(sel, state="visible", timeout=5000)
+                username_field = sel
+                logger.info("  ↳ Campo de email encontrado: %s", sel)
+                break
+            except Exception:
+                continue
+
+        if not username_field:
+            # Salva dump da página para debug
+            dump_path = Path(".linkedin_login_debug.html")
+            dump_path.write_text(await self.page.content(), encoding="utf-8")
+            logger.error("❌ Campo de email não encontrado. HTML salvo em %s", dump_path)
+            logger.error("   URL atual: %s", self.page.url)
+            logger.error("   Título: %s", await self.page.title())
+            return False
+
+        await self.page.fill(username_field, self.email)
         await self.page.fill("#password", self.password)
         await self.page.click('[type="submit"]')
 
