@@ -26,8 +26,10 @@ if _ENV_FILE.exists():
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://ubb:ubb@localhost:5432/ubb")
 
 from app.database import async_session, init_db
+from app.models import Discipline, Post, School, SemanticRelation, Tag, post_tags
+from app.services.embedding import compute_post_embedding
 from app.services.linkedin_agent import LinkedInAgent
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 logger = logging.getLogger("sync")
 
