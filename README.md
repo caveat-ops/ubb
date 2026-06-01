@@ -134,6 +134,7 @@ PYTHONPATH=backend .sync-venv/bin/python backend/sync.py [flags]
 | `--update-all` | `false` | Reprocessa posts já existentes no banco |
 | `--push-all` | `false` | Envia TODOS os raw_posts e dados classificados pra VM (modo bulk) |
 | `--no-push` | `false` | Pula push para VM remota (auto em produção) |
+| `--gemini-setup` | `false` | Roda OAuth interativo do Gemini CLI e sai |
 
 ### Modos de operação (`SYNC_MODE`)
 
@@ -197,6 +198,48 @@ Todas as 4 combinações browser × classificador funcionam:
 | Firefox | Ollama | `--no-headless --firefox` |
 | Firefox | Gemini | `--no-headless --firefox --classifier gemini` |
 
+### Autenticação Gemini CLI
+
+O Gemini CLI suporta dois métodos de autenticação, controlados por `GEMINI_LOGIN`:
+
+#### API Key (recomendado para containers)
+
+```bash
+# .env
+GEMINI_LOGIN=key
+GEMINI_API_KEY=AIza...  # https://aistudio.google.com/apikey
+```
+
+Pronto, funciona direto. Sem interação.
+
+#### OAuth (interativo)
+
+```bash
+# .env
+GEMINI_LOGIN=oauth
+```
+
+**Primeiro uso** — rode o setup interativo:
+
+```bash
+# Host (roda o Gemini CLI direto no terminal):
+gemini
+# Siga o link, autorize no navegador, cole o código.
+# O token fica em ~/.gemini/settings.json
+
+# Container (Docker):
+docker compose run --rm -it sync --gemini-setup
+# ┌─────────────────────────────────────────────┐
+# │ 1. Abre um link no terminal                │
+# │ 2. Copie o link e cole no navegador        │
+# │ 3. Autorize o app e copie o código         │
+# │ 4. Cole o código de volta no terminal      │
+# │ 5. Token salvo no volume gemini-config     │
+# └─────────────────────────────────────────────┘
+```
+
+Depois do setup, o sync roda normalmente (o token OAuth fica persistido no volume `gemini-config`).
+
 ### Variáveis de ambiente do sync
 
 | Var | Padrão | Descrição |
@@ -207,6 +250,9 @@ Todas as 4 combinações browser × classificador funcionam:
 | `LINKEDIN_PASSWORD` | — | Senha da conta LinkedIn |
 | `PLAYWRIGHT_HEADLESS` | `false` | Headless mode (quando não usa flag explícita) |
 | `CLASSIFIER` | `ollama` | Classificador padrão: `ollama` ou `gemini` |
+| `GEMINI_LOGIN` | `key` | Auth Gemini: `key` (API key) ou `oauth` |
+| `GEMINI_API_KEY` | — | API key do Google AI Studio (quando `GEMINI_LOGIN=key`) |
+| `GEMINI_MODEL` | — | Modelo Gemini (opcional, ex: `gemini-2.5-flash`) |
 | `MAX_SCROLLS` | `40` | Scrolls máximos no modo capture |
 | `CONSECUTIVE_DUPES_TO_STOP` | `5` | Dups consecutivas antes de parar |
 | `SCROLL_DELAY_MIN` | `3` | Delay mínimo entre scrolls (segundos) |

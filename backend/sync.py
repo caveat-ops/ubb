@@ -88,9 +88,87 @@ async def get_or_create_discipline(
     return discipline
 
 
+def _gemini_auth_ok() -> bool:
+    """Verifica se o Gemini CLI tem autenticação configurada."""
+    gemini_login = os.environ.get("GEMINI_LOGIN", "key")
+    if gemini_login == "oauth":
+        gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
+        return (gemini_home / "settings.json").exists()
+    # key (default)
+    return bool(os.environ.get("GEMINI_API_KEY", ""))
+
+
+def _gemini_env() -> dict:
+    """Retorna o ambiente para subprocess do Gemini CLI com as vars de auth."""
+    env = os.environ.copy()
+    gemini_login = os.environ.get("GEMINI_LOGIN", "key")
+    if gemini_login == "key":
+        env["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY", "")
+    # oauth: o Gemini CLI lê settings.json automaticamente, sem env var extra
+    if os.environ.get("GEMINI_HOME"):
+        env["GEMINI_HOME"] = os.environ["GEMINI_HOME"]
+    return env
+
+
+async def gemini_setup_oauth() -> bool:
+    """Roda 'gemini' interativamente para fluxo OAuth.
+    O usuário recebe um link, autoriza no navegador e cola o código.
+    Retorna True se o setup foi bem-sucedido."""
+    gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
+    gemini_home.mkdir(parents=True, exist_ok=True)
+
+    logger.info("🔑 Iniciando Gemini CLI em modo OAuth interativo...")
+    logger.info("   Um link será exibido. Abra no navegador, autorize e cole o código aqui.")
+    logger.info("   O token será salvo em %s", gemini_home)
+
+    env = os.environ.copy()
+    if os.environ.get("GEMINI_HOME"):
+        env["GEMINI_HOME"] = os.environ["GEMINI_HOME"]
+
+    loop = asyncio.get_event_loop()
+    try:
+        # Sem -y e sem -p: modo interativo puro, o Gemini CLI guia o OAuth
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ["gemini"],
+                env=env,
+                timeout=300,  # 5 min pro usuário fazer OAuth
+            ),
+        )
+        if result.returncode == 0 and (gemini_home / "settings.json").exists():
+            logger.info("✅ OAuth concluído! Token salvo em %s", gemini_home / "settings.json")
+            return True
+        else:
+            logger.error("❌ OAuth falhou (exit code %d)", result.returncode)
+            return False
+    except FileNotFoundError:
+        logger.error("Gemini CLI não encontrado. Instale com: npm i -g @google/gemini-cli")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout (5 min) aguardando OAuth")
+        return False
+
+
 async def classify_discipline_gemini(content: str) -> dict:
     """Classifica um post usando Gemini CLI (subprocess).
     Retorna {'discipline': str, 'confidence': int, 'school': str}"""
+    # Pré-verificação de auth
+    if not _gemini_auth_ok():
+        gemini_login = os.environ.get("GEMINI_LOGIN", "key")
+        if gemini_login == "oauth":
+            logger.error(
+                "Gemini CLI: OAuth não configurado. Rode primeiro:\n"
+                "  docker compose run --rm sync --gemini-setup"
+            )
+        else:
+            logger.error(
+                "Gemini CLI: GEMINI_API_KEY não definida no .env.\n"
+                "  Obtenha em: https://aistudio.google.com/apikey\n"
+                "  Ou use GEMINI_LOGIN=oauth + --gemini-setup"
+            )
+        return {"discipline": "Gerais", "confidence": 0, "school": ""}
+
     persona_path = Path(__file__).resolve().parent / "persona.md"
     try:
         persona = persona_path.read_text(encoding="utf-8")
@@ -126,30 +204,10 @@ async def classify_discipline_gemini(content: str) -> dict:
 
     full_prompt = f"{system_msg}\n\n{user_msg}"
 
-    # Verifica autenticação antes de rodar
-    gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
     gemini_model = os.environ.get("GEMINI_MODEL", "")
-    gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
-    settings_file = gemini_home / "settings.json"
-
-    if not gemini_api_key and not settings_file.exists():
-        logger.error(
-            "Gemini CLI sem autenticação. Configure uma das opções:\n"
-            "  1. GEMINI_API_KEY no .env (recomendado para containers)\n"
-            "  2. Rode 'gemini' interativamente no host para OAuth"
-        )
-        return {"discipline": "Gerais", "confidence": 0, "school": ""}
-
-    # Monta o comando e ambiente
     cmd = ["gemini", "--skip-trust", "-y", "-p", full_prompt]
     if gemini_model:
         cmd.extend(["-m", gemini_model])
-
-    # Passa GEMINI_API_KEY explicitamente (subprocess herda os.environ, mas
-    # garantimos que a var esteja presente)
-    subprocess_env = os.environ.copy()
-    if gemini_api_key:
-        subprocess_env["GEMINI_API_KEY"] = gemini_api_key
 
     loop = asyncio.get_event_loop()
     try:
@@ -158,11 +216,11 @@ async def classify_discipline_gemini(content: str) -> dict:
             lambda: subprocess.run(
                 cmd,
                 capture_output=True, text=True, timeout=180,
-                env=subprocess_env,
+                env=_gemini_env(),
             ),
         )
     except FileNotFoundError:
-        logger.error("Gemini CLI não encontrado. Instale com: npm i -g @anthropic-ai/gemini-cli")
+        logger.error("Gemini CLI não encontrado. Instale com: npm i -g @google/gemini-cli")
         return {"discipline": "Gerais", "confidence": 0, "school": ""}
     except subprocess.TimeoutExpired:
         logger.error("Gemini CLI timeout (180s)")
@@ -170,12 +228,10 @@ async def classify_discipline_gemini(content: str) -> dict:
 
     raw = result.stdout.strip()
     if not raw and result.stderr:
-        stderr_first_line = result.stderr.strip().split("\n")[0]
-        # Se o erro é relacionado a auth, log mais enxuto
         if "Auth method" in result.stderr or "GEMINI_API_KEY" in result.stderr:
             logger.error(
-                "Gemini CLI: autenticação não configurada no container. "
-                "Defina GEMINI_API_KEY no .env."
+                "Gemini CLI: autenticação falhou. Verifique GEMINI_API_KEY ou "
+                "rode --gemini-setup para OAuth."
             )
         else:
             logger.error("Gemini CLI stderr: %s", result.stderr[:500])
@@ -316,8 +372,19 @@ async def main():
     )
     parser.add_argument("--no-push", action="store_true", default=False, help="Skip push to remote VM (auto-enabled when NODE_ENV=production)")
     parser.add_argument("--firefox", action="store_true", default=False, help="Use Firefox stealth (invisible_playwright) instead of Chromium")
+    parser.add_argument("--gemini-setup", action="store_true", default=False, help="Run Gemini CLI OAuth setup interactively and exit")
     parser.set_defaults(headless=None)
     args = parser.parse_args()
+
+    # ── Gemini OAuth setup (interativo, sai depois) ──
+    if args.gemini_setup:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        ok = asyncio.run(gemini_setup_oauth())
+        if ok:
+            logger.info("✅ Gemini OAuth configurado. Agora pode rodar o sync normalmente.")
+        else:
+            logger.error("❌ Falha no setup OAuth. Tente novamente ou use GEMINI_LOGIN=key.")
+        sys.exit(0 if ok else 1)
 
     headless = os.environ.get("PLAYWRIGHT_HEADLESS", "false").lower() == "true" if args.headless is None else args.headless
 
