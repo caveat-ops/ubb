@@ -67,34 +67,44 @@ class LinkedInAgent:
         await self.page.keyboard.press("Escape")
         await self.page.wait_for_timeout(1000)
 
-        # LinkedIn usa IDs dinâmicos do React — busca por atributos estáveis
+        # LinkedIn muda seletores com frequência — lista acumulada por ordem de prioridade
         # state="attached": aceita mesmo que o campo esteja oculto por um overlay
         username_selectors = [
-            'input[autocomplete="username"]',
+            'input[autocomplete="username"]',       # 2025-06 (React dynamic IDs)
             'input[autocomplete="username webauthn"]',
-            "#username",
+            "#username",                             # seletor clássico (pode voltar)
             'input[name="session_key"]',
             'input[type="email"]',
         ]
-        username_field = None
-        for sel in username_selectors:
-            try:
-                await self.page.wait_for_selector(sel, state="attached", timeout=5000)
-                username_field = sel
-                logger.info("  ↳ Campo de email encontrado: %s", sel)
-                break
-            except Exception:
-                continue
+        password_selectors = [
+            'input[autocomplete="current-password"]',  # 2025-06 (React dynamic IDs)
+            "#password",                                # seletor clássico (pode voltar)
+            'input[name="session_password"]',
+            'input[type="password"]',
+        ]
 
-        if not username_field:
+        async def _find_field(selectors: list[str], label: str) -> str | None:
+            for sel in selectors:
+                try:
+                    await self.page.wait_for_selector(sel, state="attached", timeout=5000)
+                    logger.info("  ↳ Campo %s encontrado: %s", label, sel)
+                    return sel
+                except Exception:
+                    continue
+            return None
+
+        username_field = await _find_field(username_selectors, "email")
+        password_field = await _find_field(password_selectors, "senha")
+
+        if not username_field or not password_field:
             dump_path = Path(".linkedin_login_debug.html")
             dump_path.write_text(await self.page.content(), encoding="utf-8")
-            logger.error("❌ Campo de email não encontrado. HTML salvo em %s", dump_path)
+            logger.error("❌ Campos de login não encontrados (email=%s, senha=%s). HTML salvo em %s", username_field, password_field, dump_path)
             logger.error("   URL atual: %s | Título: %s", self.page.url, await self.page.title())
             return False
 
         await self.page.fill(username_field, self.email, force=True)
-        await self.page.fill('input[autocomplete="current-password"]', self.password, force=True)
+        await self.page.fill(password_field, self.password, force=True)
         await self.page.click('[type="submit"]')
 
         try:
