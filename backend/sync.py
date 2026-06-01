@@ -21,8 +21,11 @@ if _ENV_FILE.exists():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
+            k = k.strip()
             v = v.split("#")[0].strip()
-            os.environ.setdefault(k.strip(), v)
+            if k == "DATABASE_URL":
+                continue  # gerenciado explicitamente abaixo (localhost local, db:5432 via Docker)
+            os.environ.setdefault(k, v)
 
 # --- DATABASE_URL: default localhost para rodar no host; respeitado se já definido (ex: Docker) ---
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://ubb:ubb@localhost:5432/ubb")
