@@ -57,8 +57,29 @@ services:
     networks:
       - external-net
 
+  sync:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.sync
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
+      - CLASSIFIER=gemini
+    volumes:
+      - ./.linkedin_browser:/app/.linkedin_browser
+      - gemini-config:/root/.gemini
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - external-net
+    profiles:
+      - sync
+
 volumes:
   pgdata:
+  gemini-config:
 
 networks:
   external-net:

@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import random
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -20,8 +22,8 @@ if _ENV_FILE.exists():
             v = v.split("#")[0].strip()
             os.environ.setdefault(k.strip(), v)
 
-# --- Força DATABASE_URL para localhost (rodando no host, não no Docker) ---
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://ubb:ubb@localhost:5432/ubb"
+# --- DATABASE_URL: default localhost para rodar no host; respeitado se já definido (ex: Docker) ---
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://ubb:ubb@localhost:5432/ubb")
 
 from app.database import async_session, init_db
 from app.services.linkedin_agent import LinkedInAgent
@@ -77,6 +79,83 @@ async def get_or_create_discipline(
         db.add(discipline)
         await db.flush()
     return discipline
+
+
+async def classify_discipline_gemini(content: str) -> dict:
+    """Classifica um post usando Gemini CLI (subprocess).
+    Retorna {'discipline': str, 'confidence': int, 'school': str}"""
+    persona_path = Path(__file__).resolve().parent / "persona.md"
+    try:
+        persona = persona_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        persona = "You are Mariana, a cybersecurity expert."
+
+    system_msg = (
+        f"{persona}\n\n"
+        "You are classifying a LinkedIn post into a cybersecurity discipline "
+        "for the 'Universidade Bebê' (UBB) platform.\n"
+        "Return ONLY a JSON object with these fields:\n"
+        '- "discipline": the best-matching cybersecurity discipline name '
+        "(e.g., OSINT, Threat Hunting, SIEM, Red Team, Blue Team, "
+        "Digital Forensics, Incident Response, Cloud Security, "
+        "Application Security, Network Security, Social Engineering, "
+        "Governance, Cryptography, Malware Analysis, Security Awareness, "
+        "Gerais)\n"
+        '- "confidence": integer 0-100 indicating how sure you are '
+        "about the discipline match\n"
+        '- "school": the school this belongs to '
+        "(e.g., 'Offensive Security', 'Defensive Security', "
+        "'Security Operations', 'Cyber Reality', 'Fundamentals')\n\n"
+        "If the post does not clearly fit any cybersecurity discipline, "
+        'set discipline to "Gerais" and confidence to 50 or less.\n'
+        "Respond with ONLY valid JSON, no markdown, no code fences."
+    )
+
+    user_msg = (
+        f"Classify this LinkedIn post into a cybersecurity discipline:\n\n"
+        f"{content[:2000]}\n\n"
+        "Return the JSON object."
+    )
+
+    full_prompt = f"{system_msg}\n\n{user_msg}"
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ["gemini", "--skip-trust", "-y", "-p", full_prompt],
+                capture_output=True, text=True, timeout=180,
+            ),
+        )
+    except FileNotFoundError:
+        logger.error("Gemini CLI não encontrado. Instale com: npm i -g @anthropic-ai/gemini-cli")
+        return {"discipline": "Gerais", "confidence": 0, "school": ""}
+    except subprocess.TimeoutExpired:
+        logger.error("Gemini CLI timeout (180s)")
+        return {"discipline": "Gerais", "confidence": 0, "school": ""}
+
+    raw = result.stdout.strip()
+    if not raw and result.stderr:
+        logger.error("Gemini CLI stderr: %s", result.stderr[:500])
+        return {"discipline": "Gerais", "confidence": 0, "school": ""}
+
+    # Tenta extrair JSON de code fences ou resposta crua
+    json_match = re.search(r'\{[^{}]*"discipline"[^{}]*\}', raw, re.DOTALL)
+    if json_match:
+        raw = json_match.group(0)
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Failed to parse Gemini response as JSON. Raw: %s", raw[:300])
+        return {"discipline": "Gerais", "confidence": 0, "school": ""}
+
+    return {
+        "discipline": parsed.get("discipline", "Gerais"),
+        "confidence": int(parsed.get("confidence", 0)),
+        "school": parsed.get("school", ""),
+    }
 
 
 async def process_post(
@@ -189,6 +268,12 @@ async def main():
     parser.add_argument("--max-posts", type=int, default=20, help="Maximum number of posts to sync")
     parser.add_argument("--update-all", action="store_true", default=False, help="Re-process existing posts")
     parser.add_argument("--push-all", action="store_true", default=False, help="Push all existing raw_posts to VM")
+    parser.add_argument(
+        "--classifier", choices=["ollama", "gemini"],
+        default=os.environ.get("CLASSIFIER", "ollama"),
+        help="LLM classifier to use (default: ollama, or set CLASSIFIER env var)"
+    )
+    parser.add_argument("--no-push", action="store_true", default=False, help="Skip push to remote VM (auto-enabled when NODE_ENV=production)")
     parser.set_defaults(headless=None)
     args = parser.parse_args()
 
@@ -196,6 +281,12 @@ async def main():
 
     log_level = os.environ.get("LOG_LEVEL", "info")
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO), format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    # Em produção nunca faz push (já está no banco certo)
+    is_production = os.environ.get("NODE_ENV", "").lower() == "production"
+    skip_push = args.no_push or is_production
+    if is_production and not args.no_push:
+        logger.info("🏭 NODE_ENV=production — push para VM desativado automaticamente")
 
     url_target = os.environ.get("URL_TARGET", "")
     linkedin_email = os.environ.get("LINKEDIN_EMAIL", "")
@@ -295,9 +386,14 @@ async def main():
         logger.info("✅ Banco pronto")
 
         process_count = int(os.environ.get("PROCESS_COUNT", "10"))
-        logger.info("🤖 FASE 4: Classificando até %d posts com Ollama (%s)...", process_count, os.environ.get("OLLAMA_MODEL", ""))
-        from app.services.ollama_service import OllamaService
-        ollama = OllamaService()
+        classifier = args.classifier
+        classifier_label = "Gemini CLI" if classifier == "gemini" else f"Ollama ({os.environ.get('OLLAMA_MODEL', '')})"
+        logger.info("🤖 FASE 4: Classificando até %d posts com %s...", process_count, classifier_label)
+
+        ollama = None
+        if classifier == "ollama":
+            from app.services.ollama_service import OllamaService
+            ollama = OllamaService()
 
         async with async_session() as db:
             result = await db.execute(
@@ -314,7 +410,10 @@ async def main():
                     content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
                     linkedin_url = raw_json.get("link", "")
                     logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(unprocessed), row_id)
-                    classification = await ollama.classify_discipline(content)
+                    if classifier == "gemini":
+                        classification = await classify_discipline_gemini(content)
+                    else:
+                        classification = await ollama.classify_discipline(content)
                     confidence = classification["confidence"]
                     discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
                     school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
@@ -516,10 +615,10 @@ async def main():
                     total_saved += 1
         logger.info("📊 Total salvo: %d posts", total_saved)
 
-    # --- Push para VM (se configurado) ---
+    # --- Push para VM (se configurado e não em produção) ---
     push_url = os.environ.get("SYNC_PUSH_URL", "")
     push_token = os.environ.get("SYNC_PUSH_TOKEN", "")
-    if push_url and total_saved > 0:
+    if push_url and total_saved > 0 and not skip_push:
         try:
             import httpx
             headers = {"Authorization": f"Bearer {push_token}"} if push_token else {}
@@ -529,13 +628,17 @@ async def main():
         except Exception as e:
             logger.warning("⚠️  Push para VM falhou: %s", e)
 
-    # --- FASE 4: classificar posts com Ollama ---
+    # --- FASE 4: classificar posts ---
     process_count = int(os.environ.get("PROCESS_COUNT", "10"))
-    logger.info("🤖 FASE 4: Classificando até %d posts com Ollama (%s)...", process_count, os.environ.get("OLLAMA_MODEL", ""))
+    classifier = args.classifier
+    classifier_label = "Gemini CLI" if classifier == "gemini" else f"Ollama ({os.environ.get('OLLAMA_MODEL', '')})"
+    logger.info("🤖 FASE 4: Classificando até %d posts com %s...", process_count, classifier_label)
     logger.info("⏳ Isso pode levar vários minutos...")
 
-    from app.services.ollama_service import OllamaService
-    ollama = OllamaService()
+    ollama = None
+    if classifier == "ollama":
+        from app.services.ollama_service import OllamaService
+        ollama = OllamaService()
 
     async with async_session() as db:
         result = await db.execute(
@@ -552,7 +655,10 @@ async def main():
                 content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
                 linkedin_url = raw_json.get("link", "")
                 logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(unprocessed), row_id)
-                classification = await ollama.classify_discipline(content)
+                if classifier == "gemini":
+                    classification = await classify_discipline_gemini(content)
+                else:
+                    classification = await ollama.classify_discipline(content)
                 confidence = classification["confidence"]
                 discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
                 school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
@@ -589,8 +695,8 @@ async def main():
                 processed += 1
             logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
 
-            # Push do seed se houve classificações novas e push configurado
-            if processed > 0 and push_url:
+            # Push do seed se houve classificações novas, push configurado, e não em produção
+            if processed > 0 and push_url and not skip_push:
                 logger.info("📤 Enviando seed para VM (%d novos posts)...", processed)
                 import httpx
                 async with async_session() as db2:
