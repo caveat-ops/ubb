@@ -487,8 +487,14 @@ async def process_post(
             tag_names.append(h)
     if existing:
         post.tags.clear()
+    seen_tag_ids = set()
     for tag_name in tag_names:
+        if not tag_name:
+            continue
         tag = await get_or_create_tag(db, tag_name)
+        if tag.id in seen_tag_ids:
+            continue
+        seen_tag_ids.add(tag.id)
         post.tags.append(tag)
     post.raw_json = {"linkedin": linkedin_data, "classification": classification}
     await db.flush()
