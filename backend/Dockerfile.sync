@@ -2,11 +2,14 @@ FROM mcr.microsoft.com/playwright/python:v1.58.0-noble
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl xvfb dbus-x11 \
+    libpq5 curl xvfb dbus-x11 bsdextrautils \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g @google/gemini-cli \
+    && curl -fsSL https://antigravity.google/cli/install.sh | bash \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.local/bin:${PATH}"
 
 COPY requirements.api.txt requirements.sync.txt ./
 RUN pip install --no-cache-dir -r requirements.api.txt -r requirements.sync.txt
