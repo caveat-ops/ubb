@@ -4,6 +4,14 @@
 
 set -e
 
+# Se um comando foi passado explicitamente (ex: `docker compose run --rm
+# sync python sync.py --agy-setup`), executa ele direto em vez do loop do
+# scheduler — sem isso, todo `docker compose run` cai sempre no scheduler,
+# ignorando o comando pedido.
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 SCHEDULE_TIMES="${SYNC_SCHEDULE:-08:00,14:00,20:00}"
 SYNC_ARGS="${SYNC_ARGS:---headless}"
 LOG_FILE="${LOG_FILE:-/dev/stdout}"
