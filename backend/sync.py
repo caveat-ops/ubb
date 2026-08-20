@@ -38,6 +38,7 @@ from app.services.embedding import compute_post_embedding
 from app.services.linkedin_agent import LinkedInAgent
 from app.services.ollama_service import OllamaService
 from sqlalchemy import select, text
+from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger("sync")
 
@@ -439,7 +440,7 @@ async def process_post(
 ) -> Post | None:
     linkedin_url = linkedin_data["linkedin_url"]
     result = await db.execute(
-        select(Post).where(Post.linkedin_url == linkedin_url)
+        select(Post).options(selectinload(Post.tags)).where(Post.linkedin_url == linkedin_url)
     )
     existing = result.scalar_one_or_none()
     if existing and existing.content_type and not update_all:
@@ -798,7 +799,10 @@ async def main():
 
         process_count = int(os.environ.get("PROCESS_COUNT", "10"))
         classifier = args.classifier
-        classifier_label = "Gemini CLI" if classifier == "gemini" else f"Ollama ({os.environ.get('OLLAMA_MODEL', '')})"
+        classifier_label = {
+            "gemini": "Gemini CLI",
+            "agy": f"agy ({os.environ.get('AGY_MODEL', 'default')})",
+        }.get(classifier, f"Ollama ({os.environ.get('OLLAMA_MODEL', '')})")
         logger.info("🤖 FASE 4: Classificando até %d posts com %s...", process_count, classifier_label)
 
         push_url = os.environ.get("SYNC_PUSH_URL", "")
