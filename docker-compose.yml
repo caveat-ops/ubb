@@ -5,23 +5,26 @@ services:
       dockerfile: Dockerfile
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
     env_file:
       - .env
     environment:
       - NODE_ENV=production
       - TZ=${TZ:-America/Recife}
-      - VIRTUAL_HOST=${DOMAIN}
-      - VIRTUAL_PORT=3000
-      - LETSENCRYPT_HOST=${DOMAIN}
-      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
       - API_URL=http://api:8000
     depends_on:
       - api
     restart: unless-stopped
     networks:
-      - external-net
+      - internal-net
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.ubb-frontend.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.ubb-frontend.entrypoints=websecure"
+      - "traefik.http.routers.ubb-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.ubb-frontend.middlewares=security-headers@file,maintenance-on-error@file"
+      - "traefik.http.services.ubb-frontend.loadbalancer.server.port=3000"
 
   api:
     build:
@@ -31,16 +34,22 @@ services:
       - .env
     environment:
       - TZ=${TZ:-America/Recife}
-      - VIRTUAL_HOST=${API_DOMAIN}
-      - LETSENCRYPT_HOST=${API_DOMAIN}
-      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
       - DATABASE_URL=postgresql+asyncpg://ubb:ubb@db:5432/ubb
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - external-net
+      - internal-net
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.ubb-api.rule=Host(`${API_DOMAIN}`)"
+      - "traefik.http.routers.ubb-api.entrypoints=websecure"
+      - "traefik.http.routers.ubb-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.ubb-api.middlewares=security-headers@file,maintenance-on-error@file"
+      - "traefik.http.services.ubb-api.loadbalancer.server.port=8000"
 
   db:
     image: pgvector/pgvector:pg16
@@ -58,7 +67,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - external-net
+      - internal-net
 
   sync:
     build:
@@ -84,7 +93,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - external-net
+      - internal-net
 
 volumes:
   pgdata:
@@ -92,6 +101,7 @@ volumes:
   firefox-cache:
 
 networks:
-  external-net:
-    external: ${USE_EXTERNAL_NET:-true}
-    name: ${EXTERNAL_NET}
+  internal-net:
+  proxy:
+    external: true
+    name: proxy
