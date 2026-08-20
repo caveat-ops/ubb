@@ -114,7 +114,7 @@ python3 -m venv .sync-venv
 
 ## Sync — referência completa
 
-O script `backend/sync.py` extrai posts do LinkedIn, classifica com LLM e faz push para a VM. Roda no **host** (não no container), acessando o banco local e o Ollama/Gemini CLI.
+O script `backend/sync.py` extrai posts do LinkedIn, classifica com LLM e faz push para a VM. Roda no **host** (não no container) quando o classificador é Ollama, acessando o Ollama local; com `gemini` ou `agy` também roda direto no container `sync` da VM (não depende da máquina local).
 
 ### Comando base
 
@@ -129,12 +129,15 @@ PYTHONPATH=backend .sync-venv/bin/python backend/sync.py [flags]
 | `--headless` | — | Força modo headless (navegador invisível) |
 | `--no-headless` | — | Força modo visível (útil pra debug/OAuth) |
 | `--firefox` | `false` | Usa Firefox stealth (`invisible_playwright`) em vez de Chromium |
-| `--classifier {ollama,gemini}` | `ollama` | LLM para classificação de posts |
+| `--classifier {ollama,gemini,agy}` | `ollama` | LLM para classificação de posts |
 | `--max-posts N` | `20` | Máximo de posts a extrair por execução |
 | `--update-all` | `false` | Reprocessa posts já existentes no banco |
 | `--push-all` | `false` | Envia TODOS os raw_posts e dados classificados pra VM (modo bulk) |
 | `--no-push` | `false` | Pula push para VM remota (auto em produção) |
 | `--gemini-setup` | `false` | Roda OAuth interativo do Gemini CLI e sai |
+| `--agy-setup` | `false` | Roda autenticação interativa do agy (Antigravity CLI) e sai |
+
+**Classificação leve vs completa**: `ollama` e `agy` fazem a classificação **completa** (título, resumo, quote, "Mariana diz", `content_type`, dificuldade, tags). `gemini` hoje só classifica disciplina/escola (mais rápido, mas não preenche `content_type` nem os demais campos).
 
 ### Modos de operação (`SYNC_MODE`)
 
@@ -240,6 +243,30 @@ docker compose run --rm -it sync --gemini-setup
 
 Depois do setup, o sync roda normalmente (o token OAuth fica persistido no volume `gemini-config`).
 
+### Autenticação agy (Antigravity CLI)
+
+`agy` substitui o Gemini CLI e faz a classificação **completa** (não só disciplina) rodando direto no container — não depende mais da máquina local ter Ollama.
+
+**Primeiro uso** — rode o setup interativo (só uma vez; o token persiste no volume `gemini-config`, o agy usa o mesmo diretório `~/.gemini` do Gemini CLI):
+
+```bash
+# Container (Docker) — precisa de terminal interativo:
+docker compose run --rm -it sync python sync.py --agy-setup
+# Siga as instruções na tela pra autenticar.
+
+# Host (roda o agy direto no terminal):
+agy
+```
+
+Depois do setup, ative com:
+
+```bash
+# .env
+CLASSIFIER=agy
+```
+
+O scheduler do container `sync` (3x/dia, já rodando na VM) passa a fazer a classificação completa sozinho — sem precisar rodar nada na sua máquina local nem empurrar seed pra VM.
+
 ### Variáveis de ambiente do sync
 
 | Var | Padrão | Descrição |
@@ -249,10 +276,13 @@ Depois do setup, o sync roda normalmente (o token OAuth fica persistido no volum
 | `LINKEDIN_EMAIL` | — | Email da conta LinkedIn |
 | `LINKEDIN_PASSWORD` | — | Senha da conta LinkedIn |
 | `PLAYWRIGHT_HEADLESS` | `false` | Headless mode (quando não usa flag explícita) |
-| `CLASSIFIER` | `ollama` | Classificador padrão: `ollama` ou `gemini` |
+| `CLASSIFIER` | `ollama` | Classificador padrão: `ollama`, `gemini` ou `agy` |
 | `GEMINI_LOGIN` | `key` | Auth Gemini: `key` (API key) ou `oauth` |
 | `GEMINI_API_KEY` | — | API key do Google AI Studio (quando `GEMINI_LOGIN=key`) |
 | `GEMINI_MODEL` | — | Modelo Gemini (opcional, ex: `gemini-2.5-flash`) |
+| `AGY_MODEL` | — | Modelo usado pelo agy (opcional, ex: `claude-sonnet-4-6`) |
+| `AGY_TIMEOUT` | `180` | Timeout (segundos) por classificação via agy |
+| `AGY_HOME` | — | Diretório de config/auth do agy (opcional; default é `$HOME` do container, já montado em `gemini-config`) |
 | `MAX_SCROLLS` | `40` | Scrolls máximos no modo capture |
 | `CONSECUTIVE_DUPES_TO_STOP` | `5` | Dups consecutivas antes de parar |
 | `SCROLL_DELAY_MIN` | `3` | Delay mínimo entre scrolls (segundos) |

@@ -30,10 +30,13 @@ if _ENV_FILE.exists():
 # --- DATABASE_URL: default localhost para rodar no host; respeitado se já definido (ex: Docker) ---
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://ubb:ubb@localhost:5432/ubb")
 
+from typing import Awaitable, Callable
+
 from app.database import async_session, init_db
 from app.models import Discipline, Post, School, SemanticRelation, Tag, post_tags
 from app.services.embedding import compute_post_embedding
 from app.services.linkedin_agent import LinkedInAgent
+from app.services.ollama_service import OllamaService
 from sqlalchemy import select, text
 
 logger = logging.getLogger("sync")
@@ -255,10 +258,183 @@ async def classify_discipline_gemini(content: str) -> dict:
     }
 
 
+AGY_CLASSIFY_SCHEMA = json.dumps({
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "subtitle": {"type": "string"},
+        "summary": {"type": "string"},
+        "quote": {"type": "string"},
+        "mariana_take": {"type": "string"},
+        "content_type": {
+            "type": "string",
+            "enum": ["lesson", "lab", "awareness", "challenge", "storytelling",
+                     "threat_analysis", "architecture", "hands_on", "fundamentals"],
+        },
+        "skill_type": {
+            "type": "string",
+            "enum": ["técnico", "operacional", "mindset", "awareness", "arquitetura", "carreira"],
+        },
+        "difficulty": {
+            "type": "string",
+            "enum": ["iniciante", "intermediário", "avançado", "todos os níveis"],
+        },
+        "discipline": {"type": "string"},
+        "school": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "content_type", "discipline"],
+})
+
+
+def _agy_env() -> dict:
+    """Ambiente para o subprocess do agy. AGY_HOME sobrescreve $HOME (onde o
+    agy guarda auth/config em .gemini); sem AGY_HOME usa o $HOME do container
+    (o volume gemini-config já é montado em /root/.gemini)."""
+    env = os.environ.copy()
+    agy_home = os.environ.get("AGY_HOME", "")
+    if agy_home:
+        env["HOME"] = agy_home
+    return env
+
+
+async def agy_setup_auth() -> bool:
+    """Roda 'agy' interativamente para autenticar (o CLI guia o fluxo de
+    login). O estado de auth persiste em $HOME/.gemini (AGY_HOME, se
+    definido) — o mesmo volume já usado pelo Gemini CLI."""
+    logger.info("🔑 Iniciando Antigravity CLI (agy) em modo interativo...")
+    logger.info("   Siga as instruções na tela para autenticar.")
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ["script", "-qec", "stty cols 200 2>/dev/null; agy", "/dev/null"],
+                env=_agy_env(),
+                timeout=300,
+            ),
+        )
+        if result.returncode == 0:
+            logger.info("✅ agy autenticado com sucesso.")
+            return True
+        logger.error("❌ Falha na autenticação do agy (exit code %d)", result.returncode)
+        return False
+    except FileNotFoundError:
+        logger.error("agy CLI não encontrado. Instale: curl -fsSL https://antigravity.google/cli/install.sh | bash")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout (5 min) aguardando autenticação do agy")
+        return False
+
+
+async def classify_post_agy(content: str, hashtags: list[str]) -> dict:
+    """Classificação completa de um post usando o Antigravity CLI (agy).
+    Equivalente a OllamaService.classify_post(), mas via subprocess."""
+    persona_path = Path(__file__).resolve().parent / "persona.md"
+    try:
+        persona = persona_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        persona = "You are Mariana, a cybersecurity expert."
+
+    system_msg = (
+        f"{persona}\n\n"
+        "You are helping classify a LinkedIn post for the "
+        "'Universidade Bebê' platform. Analyze the post content and "
+        "produce: title (catchy), subtitle (short), summary (1-2 "
+        "sentences), quote (an impactful quote from the post), "
+        "mariana_take (Mariana's commentary, written as if you are "
+        "Mariana), content_type, skill_type, difficulty, discipline "
+        "(the cybersecurity discipline, e.g. OSINT, Red Team, Blue "
+        "Team), school (e.g. Offensive Security, Defensive Security), "
+        "and tags (relevant keywords)."
+    )
+    user_msg = (
+        f"Classify this LinkedIn post:\n\nContent: {content}\n\n"
+        f"Hashtags: {', '.join(hashtags)}\n\n"
+        "Return the classification as structured output."
+    )
+    full_prompt = f"{system_msg}\n\n{user_msg}"
+
+    agy_model = os.environ.get("AGY_MODEL", "")
+    cmd = [
+        "agy", "-p", full_prompt,
+        "--output-format", "json",
+        "--json-schema", AGY_CLASSIFY_SCHEMA,
+        "--dangerously-skip-permissions",
+    ]
+    if agy_model:
+        cmd.extend(["--model", agy_model])
+
+    timeout_s = int(os.environ.get("AGY_TIMEOUT", "180"))
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=timeout_s, env=_agy_env(),
+            ),
+        )
+    except FileNotFoundError:
+        logger.error("agy CLI não encontrado. Instale: curl -fsSL https://antigravity.google/cli/install.sh | bash")
+        return {}
+    except subprocess.TimeoutExpired:
+        logger.error("agy timeout (%ds)", timeout_s)
+        return {}
+
+    raw = result.stdout.strip()
+    combined = f"{raw}\n{result.stderr}"
+    if "authentication required" in combined.lower() or "not authenticated" in combined.lower():
+        logger.error(
+            "agy requer autenticação. Rode:\n"
+            "  docker compose run --rm -it sync python sync.py --agy-setup"
+        )
+        return {}
+
+    if not raw:
+        logger.error("agy stderr: %s", result.stderr[:500])
+        return {}
+
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Failed to parse agy envelope as JSON. Raw: %s", raw[:300])
+        return {}
+
+    if envelope.get("status") != "SUCCESS":
+        logger.error("agy status=%s: %s", envelope.get("status"), raw[:300])
+        return {}
+
+    parsed = envelope.get("structured_output") or {}
+    if not parsed:
+        # fallback: tenta extrair JSON solto da resposta em texto livre
+        response_text = envelope.get("response", "")
+        json_match = re.search(r'\{.*"content_type".*\}', response_text, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                parsed = {}
+
+    return {
+        "title": parsed.get("title", ""),
+        "subtitle": parsed.get("subtitle", ""),
+        "summary": parsed.get("summary", ""),
+        "quote": parsed.get("quote", ""),
+        "mariana_take": parsed.get("mariana_take", ""),
+        "content_type": parsed.get("content_type", ""),
+        "skill_type": parsed.get("skill_type", ""),
+        "difficulty": parsed.get("difficulty", ""),
+        "discipline": parsed.get("discipline", ""),
+        "school": parsed.get("school", ""),
+        "tags": parsed.get("tags", []),
+    }
+
+
 async def process_post(
     db,
     linkedin_data: dict,
-    ollama: OllamaService,
+    classify: Callable[[str, list[str]], Awaitable[dict]],
     update_all: bool = False,
 ) -> Post | None:
     linkedin_url = linkedin_data["linkedin_url"]
@@ -266,13 +442,13 @@ async def process_post(
         select(Post).where(Post.linkedin_url == linkedin_url)
     )
     existing = result.scalar_one_or_none()
-    if existing and not update_all:
-        logger.info("  Post already exists: %s", linkedin_url)
+    if existing and existing.content_type and not update_all:
+        logger.info("  Post already classified: %s", linkedin_url)
         return None
-    logger.info("  Classifying post with Ollama...")
-    classification = await ollama.classify_post(
-        content=linkedin_data.get("content", ""),
-        hashtags=linkedin_data.get("hashtags", []),
+    logger.info("  Classifying post...")
+    classification = await classify(
+        linkedin_data.get("content", ""),
+        linkedin_data.get("hashtags", []),
     )
     if existing:
         post = existing
@@ -327,6 +503,121 @@ async def process_post(
     return post
 
 
+async def classify_pending_posts(
+    process_count: int,
+    classifier: str,
+    update_all: bool,
+    push_url: str,
+    push_token: str,
+    skip_push: bool,
+) -> int:
+    """FASE 4: classifica com IA os posts capturados que ainda não têm
+    content_type (ou todos, se update_all). Ollama e agy usam o
+    classificador profundo (preenche title/subtitle/summary/quote/
+    mariana_take/content_type/skill_type/difficulty/tags/embedding).
+    Gemini ainda não tem um classificador profundo equivalente — nesse
+    caso mantém a classificação leve de disciplina/escola.
+    """
+    where_clause = (
+        "1=1" if update_all
+        else "p.id IS NULL OR p.content_type IS NULL OR p.content_type = ''"
+    )
+    deep_classify: Callable[[str, list[str]], Awaitable[dict]] | None = None
+    if classifier == "ollama":
+        deep_classify = OllamaService().classify_post
+    elif classifier == "agy":
+        deep_classify = classify_post_agy
+    processed = 0
+
+    async with async_session() as db:
+        result = await db.execute(
+            text(
+                f"SELECT rp.id, rp.raw_json FROM raw_posts rp "
+                f"LEFT JOIN posts p ON p.linkedin_url = rp.linkedin_url "
+                f"WHERE {where_clause} ORDER BY rp.id LIMIT :limit"
+            ),
+            {"limit": process_count},
+        )
+        pending = result.fetchall()
+        if not pending:
+            logger.info("✅ Nenhum post pendente para classificar.")
+            return 0
+
+        logger.info("📦 %d posts pendentes para processar.", len(pending))
+        for row_id, raw_json in pending:
+            linkedin_url = raw_json.get("link", "")
+            content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
+            if not linkedin_url:
+                continue
+            logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(pending), row_id)
+
+            if classifier == "gemini":
+                classification = await classify_discipline_gemini(content)
+                confidence = classification["confidence"]
+                discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
+                school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
+                logger.info("  ↳ disciplina=%s (confiança=%d%%), school=%s", discipline_name, confidence, school_name or "—")
+                school = await get_or_create_school(db, school_name)
+                discipline = await get_or_create_discipline(db, discipline_name, school)
+                result = await db.execute(select(Post).where(Post.linkedin_url == linkedin_url))
+                existing = result.scalar_one_or_none()
+                if existing:
+                    if discipline:
+                        existing.discipline_id = discipline.id
+                    if school:
+                        existing.school_id = school.id
+                else:
+                    db.add(Post(
+                        linkedin_url=linkedin_url,
+                        title=content.split("\n")[0][:100].strip(),
+                        content=content,
+                        discipline_id=discipline.id if discipline else None,
+                        school_id=school.id if school else None,
+                        indexed_at=datetime.utcnow(),
+                    ))
+                await db.commit()
+            else:
+                linkedin_data = {
+                    "linkedin_url": linkedin_url,
+                    "linkedin_post_id": raw_json.get("linkedin_post_id", ""),
+                    "content": content,
+                    "hashtags": raw_json.get("hashtags", []),
+                    "post_date": raw_json.get("date", ""),
+                }
+                await process_post(db, linkedin_data, deep_classify, update_all=update_all)
+                await db.commit()
+
+            processed += 1
+
+        logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
+
+    if processed > 0 and push_url and not skip_push:
+        logger.info("📤 Enviando seed para VM (%d posts classificados)...", processed)
+        import httpx
+        async with async_session() as db2:
+            sch_rows = (await db2.execute(text("SELECT name, slug, description, color, icon FROM schools"))).fetchall()
+            schools = [{"name": r[0], "slug": r[1], "description": r[2], "color": r[3], "icon": r[4]} for r in sch_rows]
+            disc_rows = (await db2.execute(text("SELECT d.name, d.slug, d.description, d.icon, d.color, s.name FROM disciplines d LEFT JOIN schools s ON s.id = d.school_id"))).fetchall()
+            disciplines = [{"name": r[0], "slug": r[1], "description": r[2], "icon": r[3], "color": r[4], "school_name": r[5]} for r in disc_rows]
+            post_rows = (await db2.execute(text(
+                "SELECT p.linkedin_url, p.title, p.subtitle, p.summary, p.quote, p.mariana_take, p.content_type, p.difficulty, d.name, s.name "
+                "FROM posts p LEFT JOIN disciplines d ON d.id = p.discipline_id LEFT JOIN schools s ON s.id = p.school_id "
+                "WHERE p.discipline_id IS NOT NULL"
+            ))).fetchall()
+            posts = [{"linkedin_url": r[0], "title": r[1], "subtitle": r[2], "summary": r[3], "quote": r[4], "mariana_take": r[5], "content_type": r[6], "difficulty": r[7], "discipline_name": r[8], "school_name": r[9]} for r in post_rows]
+        seed = {"schools": schools, "disciplines": disciplines, "posts": posts}
+        try:
+            r = httpx.post(f"{push_url.rstrip('/')}/api/sync/seed", json=seed, headers={"Authorization": f"Bearer {push_token}"} if push_token else {}, timeout=60, verify=False)
+            if r.status_code == 200:
+                logger.info("📤 Seed enviado: %d schools, %d disciplines, %d posts", len(schools), len(disciplines), len(posts))
+            else:
+                logger.warning("⚠️  Seed falhou: HTTP %d", r.status_code)
+        except Exception as e:
+            logger.warning("⚠️  Seed falhou: %s", e)
+
+    return processed
+
+
 async def generate_relations(db, ollama: OllamaService):
     logger.info("Generating semantic relations...")
     result = await db.execute(select(Post).where(Post.title.isnot(None), Post.summary.isnot(None)))
@@ -366,13 +657,14 @@ async def main():
     parser.add_argument("--update-all", action="store_true", default=False, help="Re-process existing posts")
     parser.add_argument("--push-all", action="store_true", default=False, help="Push all existing raw_posts to VM")
     parser.add_argument(
-        "--classifier", choices=["ollama", "gemini"],
+        "--classifier", choices=["ollama", "gemini", "agy"],
         default=os.environ.get("CLASSIFIER", "ollama"),
         help="LLM classifier to use (default: ollama, or set CLASSIFIER env var)"
     )
     parser.add_argument("--no-push", action="store_true", default=False, help="Skip push to remote VM (auto-enabled when NODE_ENV=production)")
     parser.add_argument("--firefox", action="store_true", default=False, help="Use Firefox stealth (invisible_playwright) instead of Chromium")
     parser.add_argument("--gemini-setup", action="store_true", default=False, help="Run Gemini CLI OAuth setup interactively and exit")
+    parser.add_argument("--agy-setup", action="store_true", default=False, help="Run Antigravity CLI (agy) auth setup interactively and exit")
     parser.set_defaults(headless=None)
     args = parser.parse_args()
 
@@ -384,6 +676,16 @@ async def main():
             logger.info("✅ Gemini OAuth configurado. Agora pode rodar o sync normalmente.")
         else:
             logger.error("❌ Falha no setup OAuth. Tente novamente ou use GEMINI_LOGIN=key.")
+        sys.exit(0 if ok else 1)
+
+    # ── agy auth setup (interativo, sai depois) ──
+    if args.agy_setup:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        ok = await agy_setup_auth()
+        if ok:
+            logger.info("✅ agy configurado. Agora pode rodar o sync com --classifier agy (ou CLASSIFIER=agy).")
+        else:
+            logger.error("❌ Falha no setup do agy. Tente novamente.")
         sys.exit(0 if ok else 1)
 
     headless = os.environ.get("PLAYWRIGHT_HEADLESS", "false").lower() == "true" if args.headless is None else args.headless
@@ -499,67 +801,16 @@ async def main():
         classifier_label = "Gemini CLI" if classifier == "gemini" else f"Ollama ({os.environ.get('OLLAMA_MODEL', '')})"
         logger.info("🤖 FASE 4: Classificando até %d posts com %s...", process_count, classifier_label)
 
-        ollama = None
-        if classifier == "ollama":
-            from app.services.ollama_service import OllamaService
-            ollama = OllamaService()
-
-        async with async_session() as db:
-            result = await db.execute(
-                text("SELECT rp.id, rp.raw_json FROM raw_posts rp LEFT JOIN posts p ON p.linkedin_url = rp.linkedin_url WHERE p.id IS NULL ORDER BY rp.id LIMIT :limit"),
-                {"limit": process_count},
-            )
-            unprocessed = result.fetchall()
-            if not unprocessed:
-                logger.info("✅ Nenhum post pendente.")
-            else:
-                logger.info("📦 %d posts pendentes.", len(unprocessed))
-                processed = 0
-                for row_id, raw_json in unprocessed:
-                    content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
-                    linkedin_url = raw_json.get("link", "")
-                    logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(unprocessed), row_id)
-                    if classifier == "gemini":
-                        classification = await classify_discipline_gemini(content)
-                    else:
-                        classification = await ollama.classify_discipline(content)
-                    confidence = classification["confidence"]
-                    discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
-                    school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
-                    logger.info("  ↳ disciplina=%s (confiança=%d%%), school=%s", discipline_name, confidence, school_name or "—")
-
-                    # Cria/encontra school primeiro (disciplina depende dela)
-                    school_id = None
-                    if school_name:
-                        sch_result = await db.execute(text("SELECT id FROM schools WHERE name = :name"), {"name": school_name})
-                        sch_row = sch_result.fetchone()
-                        if sch_row:
-                            school_id = sch_row[0]
-                        else:
-                            sch_result = await db.execute(text("INSERT INTO schools (name, slug) VALUES (:name, :slug) RETURNING id"), {"name": school_name, "slug": school_name.lower().replace(" ", "-")})
-                            school_id = sch_result.fetchone()[0]
-                            await db.commit()
-
-                    # Cria/encontra disciplina com school_id
-                    disc_result = await db.execute(text("SELECT id, school_id FROM disciplines WHERE name = :name"), {"name": discipline_name})
-                    disc_row = disc_result.fetchone()
-                    if disc_row:
-                        discipline_id = disc_row[0]
-                        # Atualiza school_id se estiver nulo e agora temos um
-                        if disc_row[1] is None and school_id is not None:
-                            await db.execute(text("UPDATE disciplines SET school_id = :sid WHERE id = :did"), {"sid": school_id, "did": discipline_id})
-                            await db.commit()
-                    else:
-                        disc_result = await db.execute(text("INSERT INTO disciplines (name, slug, school_id) VALUES (:name, :slug, :sid) RETURNING id"), {"name": discipline_name, "slug": discipline_name.lower().replace(" ", "-"), "sid": school_id})
-                        discipline_id = disc_result.fetchone()[0]
-                        await db.commit()
-                        logger.info("  ↳ Nova disciplina: %s (id=%d)", discipline_name, discipline_id)
-
-                    title = (content or "")[:100].split("\n")[0].strip()
-                    await db.execute(text("INSERT INTO posts (linkedin_url, title, content, discipline_id, school_id, indexed_at) VALUES (:url, :title, :content, :disc_id, :sch_id, NOW())"), {"url": linkedin_url, "title": title, "content": content, "disc_id": discipline_id, "sch_id": school_id})
-                    await db.commit()
-                    processed += 1
-                logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
+        push_url = os.environ.get("SYNC_PUSH_URL", "")
+        push_token = os.environ.get("SYNC_PUSH_TOKEN", "")
+        await classify_pending_posts(
+            process_count=process_count,
+            classifier=classifier,
+            update_all=args.update_all,
+            push_url=push_url,
+            push_token=push_token,
+            skip_push=skip_push,
+        )
         logger.info("⏹️  Parando (process-only).")
         return
 
@@ -769,86 +1020,14 @@ async def main():
     logger.info("🤖 FASE 4: Classificando até %d posts com %s...", process_count, classifier_label)
     logger.info("⏳ Isso pode levar vários minutos...")
 
-    ollama = None
-    if classifier == "ollama":
-        from app.services.ollama_service import OllamaService
-        ollama = OllamaService()
-
-    async with async_session() as db:
-        result = await db.execute(
-            text("SELECT rp.id, rp.raw_json FROM raw_posts rp LEFT JOIN posts p ON p.linkedin_url = rp.linkedin_url WHERE p.id IS NULL ORDER BY rp.id LIMIT :limit"),
-            {"limit": process_count},
-        )
-        unprocessed = result.fetchall()
-        if not unprocessed:
-            logger.info("✅ Nenhum post pendente para classificar.")
-        else:
-            logger.info("📦 %d posts pendentes para processar.", len(unprocessed))
-            processed = 0
-            for row_id, raw_json in unprocessed:
-                content = (raw_json.get("description") or raw_json.get("content") or "")[:2000]
-                linkedin_url = raw_json.get("link", "")
-                logger.info("[%d/%d] Classificando post #%d...", processed + 1, len(unprocessed), row_id)
-                if classifier == "gemini":
-                    classification = await classify_discipline_gemini(content)
-                else:
-                    classification = await ollama.classify_discipline(content)
-                confidence = classification["confidence"]
-                discipline_name = classification["discipline"] if confidence >= 90 else "Gerais"
-                school_name = classification.get("school", "") if discipline_name != "Gerais" else ""
-                logger.info("  ↳ disciplina=%s (confiança=%d%%), school=%s", discipline_name, confidence, school_name or "—")
-
-                # Cria/encontra school primeiro
-                school_id = None
-                if school_name:
-                    sch_result = await db.execute(text("SELECT id FROM schools WHERE name = :name"), {"name": school_name})
-                    sch_row = sch_result.fetchone()
-                    if sch_row:
-                        school_id = sch_row[0]
-                    else:
-                        sch_result = await db.execute(text("INSERT INTO schools (name, slug) VALUES (:name, :slug) RETURNING id"), {"name": school_name, "slug": school_name.lower().replace(" ", "-")})
-                        school_id = sch_result.fetchone()[0]
-                        await db.commit()
-
-                disc_result = await db.execute(text("SELECT id, school_id FROM disciplines WHERE name = :name"), {"name": discipline_name})
-                disc_row = disc_result.fetchone()
-                if disc_row:
-                    discipline_id = disc_row[0]
-                    if disc_row[1] is None and school_id is not None:
-                        await db.execute(text("UPDATE disciplines SET school_id = :sid WHERE id = :did"), {"sid": school_id, "did": discipline_id})
-                        await db.commit()
-                else:
-                    disc_result = await db.execute(text("INSERT INTO disciplines (name, slug, school_id) VALUES (:name, :slug, :sid) RETURNING id"), {"name": discipline_name, "slug": discipline_name.lower().replace(" ", "-"), "sid": school_id})
-                    discipline_id = disc_result.fetchone()[0]
-                    await db.commit()
-                    logger.info("  ↳ Nova disciplina: %s (id=%d)", discipline_name, discipline_id)
-
-                title = (content or "")[:100].split("\n")[0].strip()
-                await db.execute(text("INSERT INTO posts (linkedin_url, title, content, discipline_id, school_id, indexed_at) VALUES (:url, :title, :content, :disc_id, :sch_id, NOW())"), {"url": linkedin_url, "title": title, "content": content, "disc_id": discipline_id, "sch_id": school_id})
-                await db.commit()
-                processed += 1
-            logger.info("🤖 FASE 4 completa: %d posts classificados.", processed)
-
-            # Push do seed se houve classificações novas, push configurado, e não em produção
-            if processed > 0 and push_url and not skip_push:
-                logger.info("📤 Enviando seed para VM (%d novos posts)...", processed)
-                import httpx
-                async with async_session() as db2:
-                    sch_rows = (await db2.execute(text("SELECT name, slug, description, color, icon FROM schools"))).fetchall()
-                    schools = [{"name": r[0], "slug": r[1], "description": r[2], "color": r[3], "icon": r[4]} for r in sch_rows]
-                    disc_rows = (await db2.execute(text("SELECT d.name, d.slug, d.description, d.icon, d.color, s.name FROM disciplines d LEFT JOIN schools s ON s.id = d.school_id"))).fetchall()
-                    disciplines = [{"name": r[0], "slug": r[1], "description": r[2], "icon": r[3], "color": r[4], "school_name": r[5]} for r in disc_rows]
-                    post_rows = (await db2.execute(text("SELECT p.linkedin_url, p.title, p.subtitle, p.summary, p.quote, p.mariana_take, p.content_type, p.difficulty, d.name, s.name FROM posts p LEFT JOIN disciplines d ON d.id = p.discipline_id LEFT JOIN schools s ON s.id = p.school_id WHERE p.discipline_id IS NOT NULL"))).fetchall()
-                    posts = [{"linkedin_url": r[0], "title": r[1], "subtitle": r[2], "summary": r[3], "quote": r[4], "mariana_take": r[5], "content_type": r[6], "difficulty": r[7], "discipline_name": r[8], "school_name": r[9]} for r in post_rows]
-                seed = {"schools": schools, "disciplines": disciplines, "posts": posts}
-                try:
-                    r = httpx.post(f"{push_url.rstrip('/')}/api/sync/seed", json=seed, headers={"Authorization": f"Bearer {push_token}"} if push_token else {}, timeout=60, verify=False)
-                    if r.status_code == 200:
-                        logger.info("📤 Seed enviado: %d schools, %d disciplines, %d posts", len(schools), len(disciplines), len(posts))
-                    else:
-                        logger.warning("⚠️  Seed falhou: HTTP %d", r.status_code)
-                except Exception as e:
-                    logger.warning("⚠️  Seed falhou: %s", e)
+    await classify_pending_posts(
+        process_count=process_count,
+        classifier=classifier,
+        update_all=args.update_all,
+        push_url=push_url,
+        push_token=push_token,
+        skip_push=skip_push,
+    )
 
     logger.info("⏹️  Parando aqui (FASE 4).")
 
