@@ -77,7 +77,7 @@ export default function HomeSections({ onNavigate }: HomeSectionsProps) {
   const [trendOffset, setTrendOffset] = useState(0);
   const [trendFade, setTrendFade] = useState(false);
   const [trending, setTrending] = useState<{label: string; posts: number; delta: string; color: string; isNew?: boolean}[]>([]);
-  const [labs, setLabs] = useState<{title: string; desc: string; tags: string[]; difficulty: string; diffColor: string; time: string}[]>([]);
+  const [labs, setLabs] = useState<{title: string; desc: string; tags: string[]; difficulty: string; diffColor: string; time: string; url: string}[]>([]);
   const [cafe, setCafe] = useState<{title: string; excerpt: string; tags: string[]; readTime: string}[]>([]);
   const [threats, setThreats] = useState<{title: string; severity: string; severityColor: string; desc: string; tags: string[]}[]>([]);
   const [fundamentos, setFundamentos] = useState<{label: string; posts: number; icon: string; desc: string}[]>([]);
@@ -98,6 +98,26 @@ export default function HomeSections({ onNavigate }: HomeSectionsProps) {
             delta: 'novo',
             color: colors[i % colors.length],
             isNew: true,
+          })));
+        }
+      })
+      .catch(() => {});
+    api.posts.list({ contentType: 'lab,hands_on', perPage: 6 })
+      .then(data => {
+        if (data.items?.length) {
+          const diffColors: Record<string, string> = {
+            'iniciante': '#28c840',
+            'intermediário': '#febc2e',
+            'avançado': '#ff4db8',
+          };
+          setLabs(data.items.map(post => ({
+            title: post.title || '',
+            desc: post.summary || post.subtitle || '',
+            tags: post.tags || [],
+            difficulty: post.difficulty || 'Todos os níveis',
+            diffColor: diffColors[(post.difficulty || '').toLowerCase()] || '#9ca3af',
+            time: post.post_date ? new Date(post.post_date).toLocaleDateString('pt-BR') : '',
+            url: post.linkedin_url || '',
           })));
         }
       })
@@ -169,7 +189,7 @@ export default function HomeSections({ onNavigate }: HomeSectionsProps) {
 
       {/* Labs */}
       <section>
-        <SectionHeader icon={FlaskConical} title="Labs" color="#06b6d4" action="Todos os labs" />
+        <SectionHeader icon={FlaskConical} title="Labs" color="#06b6d4" action="Todos os labs" onAction={() => onNavigate('labs')} />
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {labs.length === 0 ? (
             <div className="col-span-full text-center py-6 text-xs text-[#555]">
@@ -178,6 +198,7 @@ export default function HomeSections({ onNavigate }: HomeSectionsProps) {
           ) : labs.map(lab => (
             <div
               key={lab.title}
+              onClick={() => lab.url && window.open(lab.url, '_blank', 'noopener,noreferrer')}
               className="group relative flex flex-col rounded-xl border p-5 cursor-pointer transition-all duration-200"
               style={{ background: 'rgba(13,13,13,0.8)', borderColor: 'rgba(255,255,255,0.06)' }}
               onMouseEnter={e => {

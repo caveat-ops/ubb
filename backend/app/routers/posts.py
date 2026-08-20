@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
@@ -16,18 +16,37 @@ async def list_posts(
     page: int = 1,
     per_page: int = 20,
     discipline_id: int = None,
+    content_type: str = None,
+    q: str = None,
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(Post).options(selectinload(Post.tags))
+    filters = []
     if discipline_id:
-        q = q.where(Post.discipline_id == discipline_id)
-    result = await db.execute(q.limit(per_page).offset((page - 1) * per_page))
+        filters.append(Post.discipline_id == discipline_id)
+    if content_type:
+        types = [t.strip() for t in content_type.split(",") if t.strip()]
+        if types:
+            filters.append(Post.content_type.in_(types))
+    if q:
+        like = f"%{q}%"
+        filters.append(
+            or_(
+                Post.title.ilike(like),
+                Post.summary.ilike(like),
+                Post.content.ilike(like),
+            )
+        )
+
+    list_q = select(Post).options(selectinload(Post.tags))
+    total_q = select(func.count()).select_from(Post)
+    for f in filters:
+        list_q = list_q.where(f)
+        total_q = total_q.where(f)
+
+    list_q = list_q.order_by(Post.post_date.desc().nullslast())
+    result = await db.execute(list_q.limit(per_page).offset((page - 1) * per_page))
     posts = result.unique().scalars().all()
-    total_q = select(Post)
-    if discipline_id:
-        total_q = total_q.where(Post.discipline_id == discipline_id)
-    total_result = await db.execute(total_q)
-    total = len(total_result.scalars().all())
+    total = (await db.execute(total_q)).scalar() or 0
     return PostList(
         items=[PostOut.model_validate(p) for p in posts],
         total=total,

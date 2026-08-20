@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
 import HeroSection from '@/components/HeroSection';
 import DisciplinesView from '@/components/DisciplinesView';
+import LabsView from '@/components/LabsView';
 import LessonView from '@/components/LessonView';
 import SearchPalette from '@/components/SearchPalette';
 import SyncButton from '@/components/SyncButton';
@@ -16,6 +17,8 @@ export default function Home() {
   const [view, setView] = useState<View>('home');
   const [disciplineId, setDisciplineId] = useState<number | null>(null);
   const [disciplineName, setDisciplineName] = useState('');
+  const [selectedPostId, setSelectedPostId] = useState<number | null>(null);
+  const [lessonBackView, setLessonBackView] = useState<View>('disciplines');
   const [searchOpen, setSearchOpen] = useState(false);
   const [showHero, setShowHero] = useState(true);
 
@@ -47,7 +50,7 @@ export default function Home() {
     const [posts, setPosts] = useState<PostType[]>([]);
     const [loading, setLoading] = useState(true);
     useEffect(() => {
-      api.posts.list(1, 50, disciplineId)
+      api.posts.list({ perPage: 50, disciplineId })
         .then(d => setPosts(d.items))
         .catch(() => {})
         .finally(() => setLoading(false));
@@ -66,12 +69,10 @@ export default function Home() {
         ) : (
           <div className="space-y-3">
             {posts.map(p => (
-              <a
+              <button
                 key={p.id}
-                href={p.linkedin_url || '#'}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block rounded-xl p-4 transition-all duration-200 hover:translate-y-[-2px]"
+                onClick={() => onSelectPost(p.id)}
+                className="block w-full text-left rounded-xl p-4 transition-all duration-200 hover:translate-y-[-2px]"
                 style={{ background: 'rgba(13,13,13,0.8)', border: '1px solid rgba(255,255,255,0.06)' }}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -81,7 +82,7 @@ export default function Home() {
                   </div>
                   <ExternalLink size={14} className="text-[#444] flex-shrink-0 mt-1" />
                 </div>
-              </a>
+              </button>
             ))}
           </div>
         )}
@@ -108,7 +109,7 @@ export default function Home() {
     if (view === 'lesson') {
       return (
         <div className="max-w-screen-xl mx-auto px-6 lg:px-10 pt-10">
-          <LessonView onBack={() => setView('disciplines')} />
+          <LessonView postId={selectedPostId ?? undefined} onBack={() => setView(lessonBackView)} />
         </div>
       );
     }
@@ -121,8 +122,23 @@ export default function Home() {
       );
     }
 
+    if (view === 'labs') {
+      return (
+        <div className="max-w-screen-xl mx-auto px-6 lg:px-10 pt-10">
+          <LabsView onSelectPost={(postId) => { setSelectedPostId(postId); setLessonBackView('labs'); setView('lesson'); }} />
+        </div>
+      );
+    }
+
     if (view === 'posts' && disciplineId) {
-      return <DisciplinePosts disciplineId={disciplineId} disciplineName={disciplineName} onBack={() => setView('disciplines')} onSelectPost={(postId) => { setView('lesson'); }} />;
+      return (
+        <DisciplinePosts
+          disciplineId={disciplineId}
+          disciplineName={disciplineName}
+          onBack={() => setView('disciplines')}
+          onSelectPost={(postId) => { setSelectedPostId(postId); setLessonBackView('posts'); setView('lesson'); }}
+        />
+      );
     }
 
     // Placeholder views

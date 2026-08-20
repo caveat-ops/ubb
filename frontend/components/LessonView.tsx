@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { ExternalLink, ArrowLeft, Tag, Clock, ChartBar as BarChart2, BookOpen, FlaskConical, TriangleAlert as AlertTriangle, Brain, Coffee } from 'lucide-react';
+import { ExternalLink, ArrowLeft, Tag, Clock, ChartBar as BarChart2, BookOpen, FlaskConical, Wrench, TriangleAlert as AlertTriangle, Brain, Coffee } from 'lucide-react';
 import { api, Post } from '@/lib/api';
 
 const CONTENT_TYPES = [
   { id: 'aula', icon: BookOpen, label: 'Aula', color: '#8b5cf6' },
-  { id: 'lab', icon: FlaskConical, label: 'Lab', color: '#ff4db8' },
+  { id: 'lab', icon: FlaskConical, label: 'Lab', color: '#8b5cf6' },
+  { id: 'hands_on', icon: Wrench, label: 'Hands-on', color: '#06b6d4' },
   { id: 'awareness', icon: AlertTriangle, label: 'Awareness', color: '#febc2e' },
   { id: 'fundamento', icon: Brain, label: 'Fundamento', color: '#6d28d9' },
   { id: 'cafe', icon: Coffee, label: 'Café Requentado', color: '#ff66c4' },

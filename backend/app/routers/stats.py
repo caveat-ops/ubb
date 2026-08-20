@@ -16,7 +16,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     total_disciplines = (await db.execute(select(func.count(Discipline.id)))).scalar() or 0
     total_schools = (await db.execute(select(func.count(School.id)))).scalar() or 0
     total_labs = (await db.execute(
-        select(func.count(Post.id)).where(Post.content_type == "lab")
+        select(func.count(Post.id)).where(Post.content_type.in_(["lab", "hands_on"]))
     )).scalar() or 0
     return StatsOut(
         total_posts=total_posts,

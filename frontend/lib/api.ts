@@ -111,10 +111,24 @@ export interface Stats {
   total_labs: number;
 }
 
+export interface PostListParams {
+  page?: number;
+  perPage?: number;
+  disciplineId?: number;
+  contentType?: string;
+  q?: string;
+}
+
 export const api = {
   posts: {
-    list: (page = 1, perPage = 20, disciplineId?: number) =>
-      fetchAPI<PostList>(`/api/posts?page=${page}&per_page=${perPage}${disciplineId ? `&discipline_id=${disciplineId}` : ''}`),
+    list: (params: PostListParams = {}) => {
+      const { page = 1, perPage = 20, disciplineId, contentType, q } = params;
+      const search = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+      if (disciplineId) search.set('discipline_id', String(disciplineId));
+      if (contentType) search.set('content_type', contentType);
+      if (q) search.set('q', q);
+      return fetchAPI<PostList>(`/api/posts?${search.toString()}`);
+    },
     get: (id: number) => fetchAPI<PostDetail>(`/api/posts/${id}`),
     trending: () => fetchAPI<Post[]>(`/api/posts/trending`),
     recent: () => fetchAPI<Post[]>(`/api/posts/recent`),
