@@ -53,6 +53,25 @@ const LAYER_LABELS: Record<string, string> = {
   orbital: 'Gerais',
 };
 
+// Each non-orbital layer clusters around its own anchor point instead of
+// all collapsing onto the canvas center — orbital (Gerais) stays put at the center.
+const LAYER_ANCHOR_ANGLE: Record<string, number | null> = {
+  offensive: -Math.PI / 2,
+  defensive: 0,
+  ai: Math.PI / 2,
+  reality: Math.PI,
+  orbital: null,
+};
+
+function layerAnchor(layer: string, w: number, h: number) {
+  const cx = w / 2;
+  const cy = h / 2;
+  const angle = LAYER_ANCHOR_ANGLE[layer];
+  if (angle == null) return { x: cx, y: cy };
+  const orbitR = Math.min(w, h) * 0.32;
+  return { x: cx + Math.cos(angle) * orbitR, y: cy + Math.sin(angle) * orbitR };
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 export default function KnowledgeGraph({ onNavigate }: { onNavigate?: (view: string, disciplineId: number, disciplineName: string) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -68,28 +87,29 @@ export default function KnowledgeGraph({ onNavigate }: { onNavigate?: (view: str
   const [loading, setLoading] = useState(true);
 
   const buildGraph = useCallback((w: number, h: number, data?: GraphData) => {
-    const cx = w / 2;
-    const cy = h / 2;
-
     let nodes: GraphNode[];
     let edges: GraphEdge[];
 
     if (data && data.nodes.length > 0) {
-      nodes = data.nodes.map((n, i) => ({
-        id: String(n.id),
-        label: n.label,
-        x: cx + (Math.random() - 0.5) * w * 0.3,
-        y: cy + (Math.random() - 0.5) * h * 0.3,
-        vx: (Math.random() - 0.5) * 0.12,
-        vy: (Math.random() - 0.5) * 0.12,
-        radius: 4.5 + Math.pow(n.posts, 0.68) * 2.2,
-        posts: n.posts,
-        color: n.color,
-        layer: LAYER_NAMES[n.layer] as GraphNode['layer'],
-        pulsePhase: Math.random() * Math.PI * 2,
-        isNew: n.is_new,
-        isTrending: n.is_trending,
-      }));
+      nodes = data.nodes.map((n, i) => {
+        const layer = LAYER_NAMES[n.layer] as GraphNode['layer'];
+        const anchor = layerAnchor(layer, w, h);
+        return {
+          id: String(n.id),
+          label: n.label,
+          x: anchor.x + (Math.random() - 0.5) * 70,
+          y: anchor.y + (Math.random() - 0.5) * 70,
+          vx: (Math.random() - 0.5) * 0.12,
+          vy: (Math.random() - 0.5) * 0.12,
+          radius: 4.5 + Math.pow(n.posts, 0.68) * 2.2,
+          posts: n.posts,
+          color: n.color,
+          layer,
+          pulsePhase: Math.random() * Math.PI * 2,
+          isNew: n.is_new,
+          isTrending: n.is_trending,
+        };
+      });
 
       edges = data.edges.map((e, i) => ({
         source: String(e.source),
@@ -218,9 +238,10 @@ export default function KnowledgeGraph({ onNavigate }: { onNavigate?: (view: str
             n.vy += (dy / dist) * f;
           }
         }
+        const anchor = layerAnchor(n.layer, w, h);
         const pull = 0.00010 + 0.00002 * (1 - n.posts / 18);
-        n.vx += (w / 2 - n.x) * pull;
-        n.vy += (h / 2 - n.y) * pull;
+        n.vx += (anchor.x - n.x) * pull;
+        n.vy += (anchor.y - n.y) * pull;
         n.vx *= 0.97;
         n.vy *= 0.97;
         n.x += n.vx;
@@ -273,7 +294,7 @@ export default function KnowledgeGraph({ onNavigate }: { onNavigate?: (view: str
           ctx.shadowColor = src.color;
           ctx.shadowBlur = 7;
         } else {
-          ctx.strokeStyle = src.color + '33';
+          ctx.strokeStyle = src.color + '55';
           ctx.lineWidth = 0.9;
           ctx.shadowBlur = 0;
         }
@@ -335,7 +356,15 @@ export default function KnowledgeGraph({ onNavigate }: { onNavigate?: (view: str
       }
 
       // ── MELHORIA 1+3+8+9: Nodes ──────────────────────────────────────────
-      for (const n of nodes) {
+      // Bigger nodes (and the hovered/selected one) claim label space first —
+      // renderNodes only reorders drawing, edges/particles above still use `nodes`.
+      const renderNodes = [...nodes].sort((a, b) => {
+        if (a.id === hov?.id || a.id === selectedNode?.id) return -1;
+        if (b.id === hov?.id || b.id === selectedNode?.id) return 1;
+        return b.radius - a.radius;
+      });
+      const labelRects: { x0: number; y0: number; x1: number; y1: number }[] = [];
+      for (const n of renderNodes) {
         const isHov = hov?.id === n.id;
         const isSel = selectedNode?.id === n.id;
         const pulse = Math.sin(time * 0.0014 + n.pulsePhase) * 0.5 + 0.5;
@@ -400,16 +429,31 @@ export default function KnowledgeGraph({ onNavigate }: { onNavigate?: (view: str
         ctx.lineWidth = isHov ? 1.5 : 0.7;
         ctx.stroke();
 
-        // Label
-        const lAlpha = isHov || isSel ? 1 : 0.48 + pulse * 0.18;
+        // Label — skip drawing if it would collide with an already-placed label,
+        // unless this node is hovered/selected (those always win a spot).
         const fs = isHov ? 11 : n.radius > 13 ? 10 : 9;
         ctx.font = `${isHov || isSel ? 600 : 500} ${fs}px Inter, sans-serif`;
-        ctx.fillStyle = `rgba(238,238,238,${lAlpha})`;
-        ctx.textAlign = 'center';
-        ctx.shadowColor = 'rgba(0,0,0,0.9)';
-        ctx.shadowBlur = 5;
-        ctx.fillText(n.label, n.x, n.y + n.radius + 13);
-        ctx.shadowBlur = 0;
+        const labelY = n.y + n.radius + 13;
+        const textW = ctx.measureText(n.label).width;
+        const rect = {
+          x0: n.x - textW / 2 - 3,
+          y0: labelY - fs,
+          x1: n.x + textW / 2 + 3,
+          y1: labelY + 4,
+        };
+        const collides = labelRects.some(
+          r => rect.x0 < r.x1 && rect.x1 > r.x0 && rect.y0 < r.y1 && rect.y1 > r.y0
+        );
+        if (isHov || isSel || !collides) {
+          const lAlpha = isHov || isSel ? 1 : 0.48 + pulse * 0.18;
+          ctx.fillStyle = `rgba(238,238,238,${lAlpha})`;
+          ctx.textAlign = 'center';
+          ctx.shadowColor = 'rgba(0,0,0,0.9)';
+          ctx.shadowBlur = 5;
+          ctx.fillText(n.label, n.x, labelY);
+          ctx.shadowBlur = 0;
+          labelRects.push(rect);
+        }
 
         // MELHORIA 7: NEW badge
         if (n.isNew) {
