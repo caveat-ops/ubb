@@ -56,22 +56,34 @@ async def list_posts(
 
 @router.get("/trending", response_model=list[PostOut])
 async def trending_posts(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Post).order_by(Post.indexed_at.desc().nullslast()).limit(10))
-    posts = result.scalars().all()
+    result = await db.execute(
+        select(Post)
+        .options(selectinload(Post.tags))
+        .order_by(Post.indexed_at.desc().nullslast())
+        .limit(10)
+    )
+    posts = result.unique().scalars().all()
     return [PostOut.model_validate(p) for p in posts]
 
 
 @router.get("/recent", response_model=list[PostOut])
 async def recent_posts(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Post).order_by(Post.post_date.desc().nullslast()).limit(10))
-    posts = result.scalars().all()
+    result = await db.execute(
+        select(Post)
+        .options(selectinload(Post.tags))
+        .order_by(Post.post_date.desc().nullslast())
+        .limit(10)
+    )
+    posts = result.unique().scalars().all()
     return [PostOut.model_validate(p) for p in posts]
 
 
 @router.get("/{post_id}", response_model=PostDetail)
 async def get_post(post_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Post).where(Post.id == post_id))
-    post = result.scalar_one_or_none()
+    result = await db.execute(
+        select(Post).options(selectinload(Post.tags)).where(Post.id == post_id)
+    )
+    post = result.unique().scalar_one_or_none()
     if post is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Post not found")

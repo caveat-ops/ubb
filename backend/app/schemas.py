@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class PostOut(BaseModel):
@@ -22,6 +22,13 @@ class PostOut(BaseModel):
     module_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _serialize_tags(cls, v):
+        if v and hasattr(next(iter(v), None), "name"):
+            return [t.name for t in v]
+        return v
 
 
 class PostList(BaseModel):
